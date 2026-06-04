@@ -156,7 +156,7 @@ async def handle_signal_message(message: types.Message):
                 buy_percentage = float(glass_match_alt.group(1))
                 sell_percentage = float(glass_sell_alt.group(1))
             else:
-                await message.answer("ВЕРRIG: ВХОД ЗАПРЕЩЕН. Ошибка стакана.")
+                await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Ошибка стакана.")
                 return
         else:
             buy_percentage = float(glass_match.group(1))
@@ -216,7 +216,7 @@ async def handle_signal_message(message: types.Message):
 async def process_order_execution(callback: types.CallbackQuery):
     try:
         parts = callback.data.split("_")
-        msg_id = parts[1]  # Извлекаем строковый ID сообщения из callback-строки
+        msg_id = parts[1]  # ТЕПЕРЬ СТРОГО СЧИТЫВАЕМ ИМЕННО ВТОРОЙ СТРОКОВЫЙ ЭЛЕМЕНТ!
     except Exception:
         return
     
