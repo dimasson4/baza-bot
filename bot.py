@@ -158,31 +158,29 @@ def execute_order_callback(call):
     headers = {"X-MBX-APIKEY": DZENGI_API_KEY, "Content-Type": "application/json"}
     
     try:
-        response = requests.post(full_url, headers=headers, timeout=10)
-        raw_text = response.text
-        try:
-            res_data = response.json()
-        except:
-            res_data = {}
-            
-        if response.status_code == 200 and "orderId" in res_data:
-            bot.edit_message_text(
-                f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
-                f"🔹 *Инструмент:* ETH/USD (Leverage)\n"
-                f"🔹 *Направление:* `{direction}`\n"
-                f"🔹 *Объем:* `{lot} ETH`\n"
-                f"🔹 *ID Ордера:* `{res_data.get('orderId')}`",
-                chat_id, status_msg.message_id, parse_mode="Markdown"
-            )
-        else:
-            bot.edit_message_text(
-                f"❌ *Отказано биржей Dzengi!*\n"
-                f"🔹 Код HTTP: `{response.status_code}`\n"
-                f"🔹 Ответ сервера: `{raw_text if raw_text else 'Пустое тело ответа'}`",
-                chat_id, status_msg.message_id, parse_mode="Markdown"
-            )
-    except Exception as e:
-        bot.edit_message_text(f"❌ *Сбой моста:* {str(e)}", chat_id, status_msg.message_id)
+    response = requests.post(full_url, headers=headers, timeout=10)
+
+    # Безопасно проверяем успешность по коду HTTP 200
+    if response.status_code == 200:
+        bot.edit_message_text(
+            f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
+            f"🔹 *Инструмент:* ETH/USD (Leverage)\n"
+            f"🔹 *Направление:* `{direction}`\n"
+            f"🔹 *Объем:* `{lot} ETH`\n"
+            f"🔹 *Статус:* `Успешно отправлен в ядро`",
+            chat_id, status_msg.message_id, parse_mode="Markdown"
+        )
+    else:
+        # Ограничиваем вывод ошибки первыми 200 символами, чтобы не спамить
+        short_error = response.text[:200] if response.text else "Пустой ответ"
+        bot.edit_message_text(
+            f"❌ *Отказано биржей Dzengi!*\n"
+            f"🔹 Код HTTP: `{response.status_code}`\n"
+            f"🔹 Ошибка: `{short_error}`",
+            chat_id, status_msg.message_id, parse_mode="Markdown"
+        )
+except Exception as e:
+    bot.edit_message_text(f"❌ *Сбой моста:* {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
