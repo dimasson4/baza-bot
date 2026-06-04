@@ -25,8 +25,8 @@ PORT = int(os.environ.get("PORT", 10000))
 
 # Фиксированные константы торговой платформы
 MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
-# ИСПРАВЛЕНО: Установлен корректный шлюз-адаптер согласно вашему второму боту
-DZENGI_BASE_URL = "https://dzengi.com"
+# ИСПРАВЛЕНО: Установлен официальный домен для торговых SIGNED-запросов
+DZENGI_BASE_URL = "https://api-adapter.backend.dzengi.com"
 
 # Инициализация ядра aiogram 3.x
 bot = Bot(token=BOT_TOKEN)
@@ -59,18 +59,14 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """
-    Отправка маржинального приказа LIMIT согласно канонам официального API Dzengi.
-    Параметры сортируются по алфавиту для прохождения верификации подписи.
-    """
+    """Отправка маржинального приказа LIMIT согласно официальной документации Dzengi API."""
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
     # 1. Параметры для вычисления подписи signature (Слэш в symbol НЕ экранируется)
-    # Передаем leverage=10 и recvWindow для соответствия маржинальной схеме
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
-        "leverage": "10",  # Изолированное кредитное плечо х10 по протоколу
+        "leverage": "10",  # Обязательный маржинальный параметр плеча
         "price": f"{price:.2f}",
         "quantity": f"{quantity:.4f}",
         "recvWindow": "60000",
@@ -80,13 +76,13 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "type": "LIMIT"
     }
     
-    # Строгая алфавитная сортировка ключей для вычисления HMAC SHA256 подписи
+    # Алфавитная сортировка ключей для генерации валидного хеша подписи
     sorted_raw = sorted(raw_params.items())
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # 2. Формирование строки параметров ДЛЯ URL (Слэш кодируется вручную как %2F)
-    # Последовательность url_parts ОБЯЗАТЕЛЬНО должна быть строго алфавитной
+    # 2. Формирование строки параметров ДЛЯ URL (Слэш в symbol заменяется на %2F)
+    # Порядок следования параметров в url_parts строго идентичен алфавитной сортировке!
     url_parts = [
         f"accountId={MY_ACCOUNT_ID}",
         "leverage=10",
@@ -94,13 +90,13 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         f"quantity={quantity:.4f}",
         "recvWindow=60000",
         f"side={side}",
-        "symbol=ETH%2FUSD_LEVERAGE",  # Защита от WAF Cloudflare
+        "symbol=ETH%2FUSD_LEVERAGE",  # Ручное кодирование для WAF Cloudflare
         f"timestamp={timestamp}",
         "type=LIMIT"
     ]
     query_string = "&".join(url_parts)
     
-    # Финальная сборка адреса с пустым телом POST (data=None) во избежание ошибки 405
+    # Финальная сборка URL с пустым телом POST (data=None) во избежание ошибки 405
     full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
@@ -116,7 +112,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
         except Exception as e:
-            logger.error(f"[API_EXCEPTION] Сетевой сбой: {str(e)}")
+            logger.error(f"[API_EXCEPTION] Сетевой краш: {str(e)}")
             return {"status": 500, "data": str(e)}
 # --- Секция Логики Обработки Сигналов (Мега-Протокол v14.3) ---
 
