@@ -254,71 +254,65 @@ async def handle_signal_message(message: types.Message):
     await message.answer(dashboard, parse_mode="Markdown", reply_markup=builder.as_markup())
 @dp.callback_query(F.data.startswith("tx_"))
 async def process_order_execution(callback: types.CallbackQuery):
-    # 1. Извлекаем ID сообщения из callback_data
     try:
-        data_parts = callback.data.split("_")
-        msg_id = data_parts[1]
-    except Exception as e:
-        await callback.answer("❌ Ошибка разбора метаданных кнопки.", show_alert=True)
+        msg_id = callback.data.split("_")[1]
+    except Exception:
         return
     
-    # 2. Валидация наличия транзакции в кэше памяти RAM
     if msg_id not in ORDER_CACHE:
-        await callback.answer("❌ Данные ордера устарели. Сгенерируйте новый сигнал.", show_alert=True)
+        await callback.answer("❌Данные ордера устарели.", show_alert=True)
         return
-
-    # Мгновенно тушим анимацию часов, отправляя статус-уведомление оператору
-    await callback.answer("⏳ Запрос обрабатывается шлюзом платформы Dzengi...")
-    
+        
+    await callback.answer("Запрос обрабатывается шлюзом платформы Dzengi...")
     cached_order = ORDER_CACHE[msg_id]
-    side = cached_order["side"]
-    price = cached_order["price"]
-    lot = cached_order["lot"]
     
     try:
-        logger.info(f"[GATEWAY] Инициация отправки ордера для сообщения {msg_id}")
-        
-        # Интеграция контроля таймаута: защищаем бота от бесконечного зависания сети
         async with asyncio.timeout(8.0):
-            res = await send_limit_order(side=side, price=price, quantity=lot)
+            res = await send_limit_order(
+                side=cached_order["side"], 
+                price=cached_order["price"], 
+                quantity=cached_order["lot"]
+            )
             
-        status_code = res.get("status", 500)
-        raw_data = res.get("data", "Нет данных")
+            status_code = res.get("status", 500)
+            raw_data = res.get("data", "Нет данных")
+            
+            if status_code in (200, 201):
+                try:
+                    res_json = json.loads(raw_data)
+                    order_id = res_json.get("orderId")
+                except Exception:
+                    order_id = None
 
-        # Анализ результатов ответа шлюза биржи
-        if status_code in (200, 201):
-            # Парсим успешный ответ для извлечения ID ордера
-            try:
-                res_json = json.loads(raw_data)
-                order_id = res_json.get("orderId")
-            except Exception:
-                order_id = None
-
-            if order_id:
-                # Даем торговому ядру Dzengi 1.5 секунды на обработку стакана
-                await asyncio.sleep(1.5)
+                if order_id:
+                    await asyncio.sleep(1.5)
+                    status_check = await get_order_status(order_id)
+                    order_data = status_check.get("data", {})
+                    
+                    final_status = order_data.get("status", "НЕИЗВЕСТНО")
+                    reject_reason = order_data.get("rejectReason", "Нет")
+                    
+                    report = (
+                        f"✅ **Запрос принят шлюзом Dzengi**\n"
+                        f"• ID ордера: `{order_id}`\n"
+                        f"• **Текущий статус ордера: `{final_status}`**\n"
+                    )
+                    if final_status in ("REJECTED", "CANCELED") or reject_reason != "Нет":
+                        report += f"• Причина отмены/отклонения: `{reject_reason}`\n"
+                    
+                    await callback.message.answer(report, parse_mode="Markdown")
+                else:
+                    await callback.message.answer(f"✅ Ордер размещен, но не удалось считать ID:\n{raw_data[:150]}")
                 
-                # Запрашиваем реальный статус ордера на бирже
-                status_check = await get_order_status(order_id)
-                order_data = status_check.get("data", {})
-                
-                # Извлекаем финальное состояние (NEW, FILLED, CANCELED, REJECTED)
-                final_status = order_data.get("status", "НЕИЗВЕСТНО (Проверьте терминал)")
-                reject_reason = order_data.get("rejectReason", "Нет")
-                
-                report = (
-                    f"✅ **Запрос принят шлюзом Dzengi**\n"
-                    f"• ID ордера: `{order_id}`\n"
-                    f"• **Текущий статус ордера: `{final_status}`**\n"
-                )
-                if final_status in ("REJECTED", "CANCELED") or reject_reason != "Нет":
-                    report += f"• Причина отмены/отклонения: `{reject_reason}`\n"
-                
-                await callback.message.answer(report, parse_mode="Markdown")
+                ORDER_CACHE.pop(msg_id, None)
             else:
-                await callback.message.answer(f"✅ Ордер размещен, но не удалось считать ID:\n{raw_data[:150]}")
-            
-            ORDER_CACHE.pop(msg_id, None)
+                await callback.message.answer(f"❌ Платформа Dzengi отклонила транзакцию! (HTTP {status_code})", parse_mode="Markdown")
+                file_buffer = BytesIO(raw_data.encode("utf-8"))
+                file_buffer.name = "error_log.txt"
+                await callback.message.answer_document(document=types.BufferedInputFile(file_buffer.read(), filename="error_log.txt"))
+                
+    except Exception as e:
+        await callback.message.answer(f"❌ Критический сбой: {str(e)}")
 
 # --- Точка запуска и Очистка сетевых шлюзов при деплое на Render ---
 
