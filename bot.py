@@ -98,7 +98,7 @@ def execute_order_callback(call):
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # 1. Формируем словарь параметров сделки. Все значения приводим к строкам, как требует API Dzengi
+    # 1. Параметры сделки строго в строковых типах данных для API Dzengi
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -108,14 +108,12 @@ def execute_order_callback(call):
         "timestamp": str(timestamp)
     }
     
-    # 2. Строим точную строку параметров для генерации валидной HMAC-SHA256 подписи
+    # 2. Формируем чистую Query-строку параметров для генерации валидной подписи
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
-    
-    # 3. Внедряем подпись в тело payload данных
     payload["signature"] = signature
     
-    # 4. ДОБАВЛЕН USER-AGENT: Имитируем реальный браузер, чтобы Cloudflare не «вешал» POST-запрос намертво
+    # 3. Добавляем реальный User-Agent браузера во избежание блокировок и зависания пакетов Cloudflare
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded",
@@ -123,15 +121,12 @@ def execute_order_callback(call):
     }
     
     try:
-        # 5. Выполняем POST-запрос с жестким таймаутом на чтение (чтобы бот не зависал бесконечно)
+        # 4. Выполняем POST-запрос с жестким ограничением времени на чтение во избежание бесконечного ожидания
         response = requests.post(full_trading_url, headers=headers, data=payload, timeout=(5, 10))
-        
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО ИСПОЛНЕНО", chat_id, status_msg.message_id)
         else:
-            # Если биржа отклонит — мы мгновенно увидим причину (например, рассинхрон таймстампа или баланс)
             bot.edit_message_text(f"❌ ОТКАЗ API DZENGi (Код {response.status_code}):\n{response.text[:150]}", chat_id, status_msg.message_id)
-            
     except requests.exceptions.Timeout:
         bot.edit_message_text(f"❌ ОШИБКА: Превышено время ожидания ответа от Dzengi (Таймаут Cloudflare).", chat_id, status_msg.message_id)
     except Exception as e:
