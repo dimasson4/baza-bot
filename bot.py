@@ -131,8 +131,8 @@ def handle_market_log(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
     chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id, text="🔍 Ищу нужный ID аккаунта...")
-    status_msg = bot.send_message(chat_id, "⏳ _Фильтрую маржинальные счета USD..._", parse_mode="Markdown")
+    bot.answer_callback_query(call.id, text="🔍 Считываю ID...")
+    status_msg = bot.send_message(chat_id, "⏳ _Сбор ID аккаунтов..._", parse_mode="Markdown")
     
     url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
@@ -145,39 +145,21 @@ def execute_order_callback(call):
     ).hexdigest()
     
     full_url = f"{url}?{query_string}&signature={signature}"
-    headers = {
-        "X-MBX-APIKEY": DZENGI_API_KEY,
-        "Content-Type": "application/json"
-    }
+    headers = {"X-MBX-APIKEY": DZENGI_API_KEY, "Content-Type": "application/json"}
     
     try:
         response = requests.get(full_url, headers=headers, timeout=10)
-        try:
-            res_data = response.json()
-        except:
-            res_data = {}
+        res_data = response.json()
+        
+        accounts_info = "🔍 *СПИСОК ВСЕХ ВАШИХ ID НА DZENGI:*\n\n"
+        for acc in res_data.get("accounts", []):
+            # Выводим только имя и ID, отсекая гигантские массивы настроек
+            accounts_info += f"▪️ `{acc.get('name')}` ──> ID: `{acc.get('accountId')}`\n"
             
-        if response.status_code == 200 and "accounts" in res_data:
-            accounts_info = "🔍 *НАЙДЕН ВАШ МАРЖИНАЛЬНЫЙ СЧЕТ:*\n\n"
-            found = False
-            for acc in res_data.get("accounts", []):
-                # Ищем строго маржинальный кошелек долларов
-                if acc.get("name") == "USD.cx" and acc.get("accountType") == "LEVERAGE":
-                    accounts_info += f"🔹 *Имя счета:* `{acc.get('name')}`\n"
-                    accounts_info += f"🔹 *Числовой ID:* `{acc.get('accountId')}`\n"
-                    accounts_info += f"🔹 *Баланс:* `{acc.get('balance')}`\n"
-                    found = True
-                    break
-            
-            if not found:
-                accounts_info = "⚠️ *Маржинальный счет USD.cx LEVERAGE не найден в API.*\nУбедитесь, что в кошельках Dzengi открыт маржинальный счет в долларах."
-                
-            bot.send_message(chat_id, accounts_info, parse_mode="Markdown")
-            bot.delete_message(chat_id, status_msg.message_id)
-        else:
-            bot.edit_message_text(f"❌ *Ошибка запроса:* {response.status_code}", chat_id, status_msg.message_id)
+        bot.send_message(chat_id, accounts_info, parse_mode="Markdown")
+        bot.delete_message(chat_id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ *Сбой диагностического моста:* {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ *Сбой:* {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
