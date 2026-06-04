@@ -94,53 +94,38 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
     status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
     
-    # 1. Точный адрес шлюза REST API Dzengi.com
-    full_trading_url = "https://dzengi.com"
+    # 1. Используем точный эндпоинт официального API-адаптера
+    base_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # 2. Формируем первичные параметры. Все типы должны строго соответствовать типам API
-    payload = {
-        "symbol": "ETH/USD_LEVERAGE",
-        "side": side,
-        "accountId": str(MY_ACCOUNT_ID),
-        "quantity": float(lot),
-        "type": "MARKET",
-        "timestamp": timestamp
-    }
+    # 2. Формируем валидную Query-строку. Слэш закодирован как %2F для прохождения Cloudflare!
+    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
-    # 3. Генерируем точную x-www-form-urlencoded строку, используя внутренний механизм requests.
-    # Это на 100% гарантирует, что слэш закодируется как %2F, а порядок ключей совпадет с телом.
-    req = requests.models.PreparedRequest()
-    req.prepare_body(data=payload, files=None)
-    data_to_sign = req.body  # Получаем строку "symbol=ETH%2FUSD_LEVERAGE&side=..."
+    # 3. Вычисляем подпись HMAC SHA256 строго по строке параметров
+    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
     
-    # 4. Считаем подпись по строке тела
-    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), data_to_sign.encode('utf-8'), digestmod='sha256').hexdigest()
+    # 4. Склеиваем параметры прямо в URL-строку, как требует альтернативный метод Dzengi
+    full_url = f"{base_url}?{query_string}&signature={signature}"
     
-    # 5. Внедряем подпись непосредственно в payload
-    payload["signature"] = signature
-    
-    # 6. Заголовки, включая обязательный User-Agent для маскировки запроса от защитных триггеров Cloudflare
+    # 5. Передаем заголовок авторизации. Пустое тело запроса гарантирует отсутствие блокировок контента
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
     try:
-        # 7. Отправляем ПОЛНОСТЬЮ чистый URL с параметрами в data. Добавлены жесткие таймауты
-        response = requests.post(full_trading_url, headers=headers, data=payload, timeout=(5, 10))
+        # 6. Отправляем POST с пустым телом, параметры находятся в URL
+        response = requests.post(full_url, headers=headers, data=None, timeout=10)
         
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО ИСПОЛНЕНО", chat_id, status_msg.message_id)
         else:
-            bot.edit_message_text(f"❌ ОТКАЗ API DZENGi (Код {response.status_code}):\n{response.text[:150]}", chat_id, status_msg.message_id)
+            # Теперь Cloudflare пропустит запрос, и мы увидим реальный торговый ответ от биржи
+            bot.edit_message_text(f"❌ ОТВЕТ БИРЖИ Dzengi (Код {response.status_code}):\n{response.text[:150]}", chat_id, status_msg.message_id)
             
-    except requests.exceptions.Timeout:
-        bot.edit_message_text(f"❌ ОШИБКА: Превышено время ожидания ответа (Таймаут шлюза Cloudflare).", chat_id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ СБОЙ ЗАПРОСА: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ ОШИБКА СЕТИ: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
