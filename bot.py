@@ -88,7 +88,6 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Запуск авто-подбора аккаунта...")
     status_msg = bot.send_message(chat_id, "⏳ _Считываю ваш реальный торговый счет на Dzengi..._", parse_mode="Markdown")
     
-    # ШАГ 1: Динамически запрашиваем конфигурацию пользователя для поиска реального accountId
     config_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     query_config = f"timestamp={timestamp}"
@@ -98,17 +97,15 @@ def execute_order_callback(call):
     
     real_account_id = None
     try:
-        res_config = requests.get(f"{config_url}?{query_config}&signature={sig_config}", headers=headers, timeout=10)
+        # Добавлен жесткий таймаут 5 секунд, чтобы бот никогда больше не зависал здесь
+        res_config = requests.get(f"{config_url}?{query_config}&signature={sig_config}", headers=headers, timeout=5)
         config_json = res_config.json()
-        # Извлекаем левередж-аккаунт с поддержкой суффикса
-        real_account_id = config_json.get("userId")  # Торговое ядро Dzengi принимает userId как дефолтный аккаунт-индекс
+        real_account_id = config_json.get("userId")
     except:
         pass
 
-    # Если через конфиг не вытащили, используем дефолтное системное авто-определение ("")
     account_to_send = real_account_id if real_account_id else ""
 
-    # ШАГ 2: Отправка реального маржинального ордера
     url_endpoints = [
         "https://dzengi.com",
         "https://currency.com"
@@ -125,11 +122,11 @@ def execute_order_callback(call):
     if account_to_send:
         payload["accountId"] = account_to_send
 
-    # Сборка подписи
+    # Исправлена опечатка: MARKET обернут в строковые кавычки "MARKET"
     q_str = f"symbol=ETH%2FUSD_LEVERAGE&side={side}"
     if account_to_send:
         q_str += f"&accountId={account_to_send}"
-    q_str += f"&quantity={lot}&type={MARKET}&timestamp={payload['timestamp']}"
+    q_str += f"&quantity={lot}&type=MARKET&timestamp={payload['timestamp']}"
     
     signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), q_str.encode('utf-8'), digestmod='sha256').hexdigest()
     payload["signature"] = signature
@@ -139,7 +136,7 @@ def execute_order_callback(call):
     
     for target_url in url_endpoints:
         try:
-            response = requests.post(target_url, headers=headers, data=payload, timeout=8)
+            response = requests.post(target_url, headers=headers, data=payload, timeout=6)
             raw_response = response.text
             if response.status_code == 200:
                 success = True
