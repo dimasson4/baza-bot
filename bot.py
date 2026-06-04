@@ -28,15 +28,6 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Перехватчик ошибок для гашения конфликтов 409 при деплое
-@bot.custom_errorhandler()
-def handle_polling_errors(exception):
-    if "409" in str(exception):
-        print("⚠️ Уведомление: Старая сессия закрыта новым контейнером (Ожидаемо при деплое).")
-        return True
-    print(f"❌ Непредвиденная ошибка поллинга: {exception}")
-    return False
-
 @bot.message_handler(func=lambda message: "ETH/USD" in message.text)
 def handle_market_log(message):
     chat_id = message.chat.id
@@ -103,11 +94,12 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
     status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
     
+    # Точный адрес REST API Dzengi для выставления ордеров leverage
     full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Формируем словарь параметров ордера для тела запроса
+    # Собираем параметры в словарь
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -117,21 +109,21 @@ def execute_order_callback(call):
         "timestamp": timestamp
     }
     
-    # Строим валидную строку для генерации подписи HMAC
+    # Строка параметров для корректной генерации HMAC-подписи
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
     
-    # Передаем сгенерированную подпись в словарь данных
+    # Добавляем подпись в payload
     payload["signature"] = signature
     
-    # Выставляем строго требуемые платформой Dzengi заголовки
+    # Строгие заголовки
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     try:
-        # Отправляем POST-запрос с чистым URL и параметрами строго внутри data=payload
+        # Отправляем параметры в теле запроса (data=payload)
         response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО", chat_id, status_msg.message_id)
@@ -141,16 +133,17 @@ def execute_order_callback(call):
         bot.edit_message_text(f"❌ СБОЙ: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
-    # Принудительно разрываем старые сессии Telegram перед запуском поллинга
-    try:
-        bot.delete_webhook(drop_pending_updates=True)
-    except:
-        pass
-        
-    # Запуск фонового веб-сервера (Health Check)
+    # Запускаем фоновый веб-сервер для прохождения деплоя на Render
     server_thread = Thread(target=run_health_server)
     server_thread.daemon = True
     server_thread.start()
     
-    # Старт поллинга с фильтрацией дублирующихся инстансов
-    bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=10)
+    # Вечный цикл поллинга с безопасным подавлением конфликтов перезапуска
+    while True:
+        try:
+            bot.delete_webhook(drop_pending_updates=True)
+            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            # Ошибка 409 или сетевой сбой во время деплоя просто вызовут перезапуск цикла через 3 секунды
+            time.sleep(3)
+            continue
