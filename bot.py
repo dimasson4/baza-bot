@@ -60,49 +60,53 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     """
-    Отправка маржинального приказа LIMIT на официальный рабочий шлюз Dzengi API.
-    Все параметры строго отсортированы по алфавиту для успешной валидации подписи.
+    Отправка маржинального приказа LIMIT на официальный шлюз Dzengi API.
+    Все параметры передаются строго как Query Parameters прямо в URL-строке (data=None),
+    что является единственным способом пробить WAF Cloudflare на ://dzengi.com.
     """
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # 1. Параметры для вычисления подписи signature (Слэш в symbol НЕ экранируется)
+    # Жесткая строковая фиксация float-значений
+    str_price = f"{price:.2f}"
+    str_quantity = f"{quantity:.4f}"
+    str_timestamp = str(timestamp)
+    
+    # 1. Формирование упорядоченных параметров ДЛЯ ПОДПИСИ (Слэш в symbol НЕ экранируется)
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
-        "leverage": "10",  # Обязательный маржинальный параметр плеча
-        "price": f"{price:.2f}",
-        "quantity": f"{quantity:.4f}",
-        "recvWindow": "60000",  # Окно валидности запроса
+        "leverage": "10",  # Маржинальное плечо х10
+        "price": str_price,
+        "quantity": str_quantity,
+        "recvWindow": "60000",
         "side": side,
         "symbol": "ETH/USD_LEVERAGE",
-        "timestamp": str(timestamp),
+        "timestamp": str_timestamp,
         "type": "LIMIT"
     }
     
-    # Алфавитная сортировка ключей для генерации валидного хеша подписи
+    # Строгая алфавитная сортировка ключей для вычисления валидной HMAC SHA256 подписи
     sorted_raw = sorted(raw_params.items())
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # 2. Формирование строки параметров ДЛЯ URL (Слэш в symbol заменяется вручную на %2F)
-    # Порядок следования параметров в url_parts строго идентичен алфавитной сортировке!
+    # 2. Формирование Query-строки параметров ДЛЯ URL (Слэш кодируется строго вручную как %2F)
+    # Порядок следования параметров ОБЯЗАТЕЛЬНО должен быть строго алфавитным!
     url_parts = [
         f"accountId={MY_ACCOUNT_ID}",
         "leverage=10",
-        f"price={price:.2f}",
-        f"quantity={quantity:.4f}",
+        f"price={str_price}",
+        f"quantity={str_quantity}",
         "recvWindow=60000",
         f"side={side}",
-        "symbol=ETH%2FUSD_LEVERAGE",  # Ручное кодирование для WAF Cloudflare
-        f"timestamp={timestamp}",
+        "symbol=ETH%2FUSD_LEVERAGE",  # Ручное экранирование слэша
+        f"timestamp={str_timestamp}",
         "type=LIMIT"
     ]
     query_string = "&".join(url_parts)
     
-    # ВОЗВРАЩЕНО: Официальный боевой домен из логов второго бота-аналитика
-    REAL_DZENGI_URL = "https://api-adapter.dzengi.com"
-    
-    # Финальная сборка URL с пустым телом POST (data=None) во избежание ошибки 405
+    # Финальная сборка full_url. Тело запроса (data=None) остается АБСОЛЮТНО пустым.
+    REAL_DZENGI_URL = "https://://dzengi.com"
     full_url = f"{REAL_DZENGI_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
@@ -113,7 +117,8 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка подписанного маржинального приказа на {full_url}")
+            logger.info(f"[API_REQUEST] Отправка верифицированного Query POST приказа на {full_url}")
+            # Параметры передаются в URL-строке, аргумент data оставляем строго пустым (None)
             async with session.post(full_url, data=None, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
