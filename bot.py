@@ -108,10 +108,13 @@ def handle_market_log(message):
         btn_text = f"🚀 Отправить {direction} на биржу ({lot} ETH)"
         keyboard.add(telebot.types.InlineKeyboardButton(text=btn_text, callback_data=callback_payload))
 
-        bot.delete_message(chat_id, message.message_id) # Стираем сырой лог для чистоты
+        try:
+        bot.delete_message(chat_id, message.message_id)
+        except:
+        pass
         bot.send_message(chat_id, dashboard, reply_markup=keyboard, parse_mode="Markdown")
 
-    except Exception as parse_error:
+        except Exception as parse_error:
         bot.send_message(chat_id, f"❌ *Ошибка разбора данных алгоритмом:* `{str(parse_error)}`")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
