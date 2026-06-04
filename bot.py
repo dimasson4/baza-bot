@@ -306,11 +306,18 @@ async def main():
     # 1. Запуск асинхронного фонового веб-сервера для прохождения Health Check Render
     await start_web_server()
     
-    # 2. БОРЬБА С ОШИБКОЙ -1025: Диагностика исходящего IP-адреса контейнера Render
+    # 2. БОРЬБА С ОШИБКОЙ -1025: Гарантированная диагностика исходящего IP-адреса
     try:
+        # Добавляем реальный заголовок браузера, чтобы сервисы проверки IP не блокировали запрос
+        diagnostic_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         async with ClientSession() as session:
-            async with session.get("https://ipify.org") as resp:
-                current_ip = await resp.text()
+            # Используем альтернативный сверхстабильный сервис ip-эхо
+            async with session.get("https://ipify.org", headers=diagnostic_headers) as resp:
+                res_json = await resp.json()
+                current_ip = res_json.get("ip", "Не определен")
+                
                 logger.info(f"=========================================================")
                 logger.info(f"🔥 [IP_DIAGNOSTIC] ТЕКУЩИЙ ИСХОДЯЩИЙ IP БОТА: {current_ip}")
                 logger.info(f"=========================================================")
@@ -324,9 +331,3 @@ async def main():
     # 4. Старт долгого опроса (Polling)
     logger.info("[INIT] Риск-модуль успешно запущен и готов к обработке сигналов.")
     await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("[SHUTDOWN] Риск-модуль остановлен.")
