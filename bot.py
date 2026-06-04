@@ -92,33 +92,52 @@ async def cmd_start(message: types.Message):
 async def handle_signal_message(message: types.Message):
     text = message.text
 
-    # 1. Извлечение числовых значений (Цена, Покупки, Продажи)
-    numbers = re.findall(r"\d+(?:\.\d+)?", text)
-    if len(numbers) < 3:
-        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Недостаточно финансовых данных.")
-        return
+    # 1. СТРОГИЙ СЕГМЕНТИРОВАННЫЙ ПАРСИНГ метрик
+    try:
+        # Ищем цену строго после слова "Цена:"
+        price_match = re.search(r"(?:Цена|Price)[:\s]*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        if not price_match:
+            await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Не найдена цена входа.")
+            return
+        entry_price = round(float(price_match.group(1)), 2)
 
-    # Жесткое распределение переменных из упомянутого текста
-    entry_price = round(float(numbers[0]), 2)
-    buy_percentage = float(numbers[1])
-    sell_percentage = float(numbers[2])
+        # Ищем проценты стакана строго в строке "Стакан:"
+        glass_match = re.search(r"(?:Стакан|Glass)[:\s]*.*?(\d+)%\s*(?:покупки|buy).*?(\d+)%\s*(?:продажи|sell)", text, re.IGNORECASE)
+        if not glass_match:
+            # Резервный поиск, если структура процентов переставлена местами
+            glass_match_alt = re.search(r"(\d+)%\s*(?:покупки|buy)", text, re.IGNORECASE)
+            glass_sell_alt = re.search(r"(\d+)%\s*(?:продажи|sell)", text, re.IGNORECASE)
+            if glass_match_alt and glass_sell_alt:
+                buy_percentage = float(glass_match_alt.group(1))
+                sell_percentage = float(glass_sell_alt.group(1))
+            else:
+                await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Не удалось распарсить стакан процентов.")
+                return
+        else:
+            buy_percentage = float(glass_match.group(1))
+            sell_percentage = float(glass_match.group(2))
+
+    except Exception as e:
+        logger.error(f"Ошибка парсинга регулярных выражений: {str(e)}")
+        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Критическая ошибка разбора структуры текста.")
+        return
 
     # 2. Поиск баланса (Парсинг правила FALLBACK)
     balance_match = re.search(r"(?:баланс|balance)[:\s]*\$?(\d+(?:\.\d+)?)", text, re.IGNORECASE)
     balance = float(balance_match.group(1)) if balance_match else 65.54
 
-    # 3. Направление сделки (Вектор + Стакан > 60%)
+    # 3. Направление сделки (Вектор + Стакан >= 60%)
     is_bullish = "бычий" in text.lower() or "↑" in text
     is_bearish = "медвежий" in text.lower() or "↓" in text
 
-    if is_bullish and buy_percentage > 60.0:
+    if is_bullish and buy_percentage >= 60.0:
         direction = "LONG"
         side = "BUY"
-    elif is_bearish and sell_percentage > 60.0:
+    elif is_bearish and sell_percentage >= 60.0:
         direction = "SHORT"
         side = "SELL"
     else:
-        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Сигнал не подтвержден перекосом стакана >60%.")
+        await message.answer(f"ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Сигнал не подтвержден перекосом стакана >60%. (Покупки: {buy_percentage}%, Продажи: {sell_percentage}%)")
         return
 
     # 4. Расчет математической матрицы по формулам протокола v14.3
@@ -140,12 +159,11 @@ async def handle_signal_message(message: types.Message):
 
     calculated_hash = round(entry_price + stop_loss + take_profit + breakeven_trigger, 2)
 
-    # Шаг 3. Селф-тест ИИ
     if not math_check:
         await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Внутренний математический сбой модели.")
         return
 
-    # 5. Сборка строгого шаблона ответа без поломок верстки
+    # 5. Сборка строгого шаблона ответа
     action_str = "🟢 ОТКРЫТЬ LONG" if direction == "LONG" else "🔴 ОТКРЫТЬ SHORT"
     
     dashboard = (
