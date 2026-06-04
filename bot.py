@@ -167,7 +167,9 @@ def execute_order_callback(call):
             chat_id, status_msg.message_id, parse_mode="Markdown"
         )
     else:
-        bot.edit_message_text(f"❌ *Отказано торговым ядром биржи!*", chat_id, status_msg.message_id)
+    # Выводим в чат первые 200 символов реального ответа биржи для точной диагностики
+    error_text = response.text[:200] if 'response' in locals() else "Нет сетевого ответа от серверов Dzengi"
+    bot.edit_message_text(f"❌ *Отказ Dzengi:* `{error_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
