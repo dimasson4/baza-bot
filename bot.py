@@ -1,51 +1,41 @@
 import os
 import re
+import hmac
+import time
 import json
 import telebot
+import requests
 from threading import Thread
-from huggingface_hub import InferenceClient
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Автоматический сбор ключей из защищенной памяти Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-HF_API_KEY = os.environ.get("HF_API_KEY")
+SAMBANOVA_API_KEY = os.environ.get("HF_API_KEY")
+DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
+DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Инициализируем официальный клиент Hugging Face Hub
-# Подключаем мощную открытую коммерческую модель от Meta для идеальной математики
-client = InferenceClient(
-    model="meta-llama/Llama-3.3-70B-Instruct",
-    token=HF_API_KEY
-)
-
-# ====================================================================
-# 🌐 МИКРО-ВЕБ-СЕРВЕР ДЛЯ ОБХОДА ПРОВЕРКИ ПОРТОВ RENDER
-# ====================================================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"OK")
-        
     def log_message(self, format, *args):
-        return  # Отключаем лишний спам логов в консоль
+        return
 
 def run_health_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# ====================================================================
-
 PROTOCOL_V14_4 = """
 ИНСТРУКЦИЯ ДЛЯ ИИ: Ты — холодный, безэмоциональный робот-риск-офицер. Твоя задача — строго выполнять алгоритм. Вывод любых громоздких JSON-структур в открытом виде категорически запрещен. Ответ должен состоять только из чистого визуального дашборда для оператора. Все технические API-данные обязаны упаковываться в одну скрытую строчку-минимум в самом финале сообщения.
 
-0. ВРЕМЕННОЙ И ФИНАНСОВЫЙ КОНТЕКСТ СЕССИИ (ФИКСИФОВАННЫЙ):
+0. ВРЕМЕННОЙ И ФИНАНСОВЫЙ КОНТЕКСТ СЕССИИ (ФИКСИРОВАННЫЙ):
 * ТЕКУЩАЯ ДАТА: 04.06.2026.
 * Базовый баланс: Динамический, берется из внешнего запроса.
-* ⚠️ КРИТИЧЕСКОЕ РЕЗЕРВНОЕ ПРАВИЛО (FALLBACK): Так как в логе скрипта технически отсутствует поле баланса, ИИ категорически запрещено аннулировать приказ или выдавать ошибку отсутствия данных. Если баланс не указан оператором в текущем сообщении напрямую, ИИ обязан автоматически принять базовый баланс равным $65.54 и беспрепятственно продолжить расчеты.
+* ⚠️ КРИТИЧЕСКОЕ РЕЗЕРВНОЕ ПРАВИЛО (FALLBACK): Так как в логе скрипта технически отсутствует поле баланса, ИИ обязан автоматически принять базовый баланс равным $65.54 и беспрепятственно продолжить расчеты.
 * Допустимые инструменты: Строго ETH/USD. Если в заголовке лога скрипта указан любой другой инструмент, вход категорически запрещен.
 
 1. ЖЕСТКИЙ АЛГОРИТМ ПРИНЯТИЯ РЕШЕНИЙ (ПОД ЛОГИКУ СКРИПТА):
@@ -91,23 +81,36 @@ PROTOCOL_V14_4 = """
 @bot.message_handler(func=lambda message: "ETH/USD" in message.text)
 def handle_market_log(message):
     chat_id = message.chat.id
-    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через официальный шлюз HF Hub...*", parse_mode="Markdown")
+    
+    current_status = os.environ.get("TRADING_STATUS", "ON").strip().upper()
+    if current_status == "OFF":
+        bot.send_message(chat_id, "⚠️ *ТОРГОВЛЯ ЗАБЛОКИРОВАНА!*\nАктивирован режим Emergency Stop. Сигнал рынка проигнорирован.", parse_mode="Markdown")
+        return
+
+    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через скоростной безлимитный шлюз...*", parse_mode="Markdown")
+    full_prompt = f"{PROTOCOL_V14_4}\n\nВОТ СВЕЖИЙ ЛОГ ДЛЯ АНАЛИЗА:\n{message.text}"
+    
+    try:
+        response = requests.post(
+            "https://sambanova.ai",
+            headers={"Authorization": f"Bearer {SAMBANOVA_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "Meta-Llama-3.1-70B-Instruct", "messages": [{"role": "user", "content": full_prompt}], "temperature": 0.1},
+            timeout=12
+        )
+        status, response_text = response.status_code, response.text
+    except Exception as e:
+        bot.edit_message_text(f"❌ Сбой шлюза ИИ: {str(e)}", chat_id, status_msg.message_id)
+        return
+
+    if status != 200:
+        bot.edit_message_text(f"❌ Сбой шлюза ИИ (Код {status}).", chat_id, status_msg.message_id)
+        return
 
     try:
-        full_prompt = f"{PROTOCOL_V14_4}\n\nВОТ СВЕЖИЙ ЛОГ ДЛЯ АНАЛИЗА:\n{message.text}"
-        
-        # Безопасный запрос к модели Llama 3.3 через официальный SDK
-        response = client.chat_completion(
-            messages=[{"role": "user", "content": full_prompt}],
-            max_tokens=1000,
-            temperature=0.1
-        )
-        
-        ai_text = response.choices[0].message.content
-
+        result = json.loads(response_text)
+        ai_text = result['choices']['message']['content']
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_operator_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
-
         bot.delete_message(chat_id, status_msg.message_id)
         
         if "ВЕРДИКТ: ВХОД ЗАПРЕЩЕН" in clean_operator_text:
@@ -121,19 +124,61 @@ def handle_market_log(message):
             bot.send_message(chat_id, clean_operator_text, reply_markup=keyboard, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, clean_operator_text)
-
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка шлюза HF Hub: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка обработки: {str(e)}", chat_id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
     _, direction, entry_price, lot = call.data.split("_")
-    bot.answer_callback_query(call.id, text=f"Передача приказа...")
-    bot.send_message(call.message.chat.id, f"⏳ _Запуск API шлюза для ордера {direction}..._", parse_mode="Markdown")
-    bot.send_message(call.message.chat.id, f"✅ *API ИСПОЛНЕНО:* Ордер выставлен!", parse_mode="Markdown")
+    chat_id = call.message.chat.id
+    
+    current_status = os.environ.get("TRADING_STATUS", "ON").strip().upper()
+    if current_status == "OFF":
+        bot.answer_callback_query(call.id, text="❌ Торговля заблокирована!", show_alert=True)
+        bot.send_message(chat_id, "❌ *ОТКЛОНЕНО:* Включен Emergency Stop.", parse_mode="Markdown")
+        return
+        
+    bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
+    status_msg = bot.send_message(chat_id, f"⏳ _Формирую цифровой ордер {direction} для Dzengi..._", parse_mode="Markdown")
+    
+    url = "https://currency.com"
+    timestamp = int(time.time() * 1000)
+    side = "BUY" if direction == "LONG" else "SELL"
+    
+    query_string = f"symbol=ETH%2FUSD&side={side}&accountId=0&quantity={lot}&type=MARKET&timestamp={timestamp}"
+    
+    signature = hmac.new(
+        DZENGI_SECRET_KEY.encode('utf-8'),
+        query_string.encode('utf-8'),
+        digestmod='sha256'
+    ).hexdigest()
+    
+    full_url = f"{url}?{query_string}&signature={signature}"
+    headers = {
+        "X-MBX-APIKEY": DZENGI_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.post(full_url, headers=headers, timeout=10)
+        res_data = response.json()
+        
+        if response.status_code == 200 and "orderId" in res_data:
+            bot.edit_message_text(
+                f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
+                f"🔹 *Инструмент:* ETH/USD\n"
+                f"🔹 *Направление:* `{direction}`\n"
+                f"🔹 *Объем:* `{lot} ETH`\n"
+                f"🔹 *ID Ордера:* `{res_data.get('orderId')}`",
+                chat_id, status_msg.message_id, parse_mode="Markdown"
+            )
+        else:
+            error_msg = res_data.get("msg", "Неизвестная ошибка биржи")
+            bot.edit_message_text(f"❌ *Биржа отклонила приказ!*\nПричина: `{error_msg}`", chat_id, status_msg.message_id, parse_mode="Markdown")
+    except Exception as e:
+        bot.edit_message_text(f"❌ *Сбой сетевого моста биржи:* {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
-    # Запускаем фоновый веб-сервер для удержания статуса Live на Render
     server_thread = Thread(target=run_health_server)
     server_thread.daemon = True
     server_thread.start()
