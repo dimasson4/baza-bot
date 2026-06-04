@@ -215,9 +215,9 @@ async def handle_signal_message(message: types.Message):
 @dp.callback_query(F.data.startswith("tx_"))
 async def process_order_execution(callback: types.CallbackQuery):
     try:
-        parts = callback.data.split("_")
-        msg_id = parts[1]  # ТЕПЕРЬ СТРОГО СЧИТЫВАЕМ ИМЕННО ВТОРОЙ СТРОКОВЫЙ ЭЛЕМЕНТ!
+        msg_id = str(callback.data).replace("tx_", "")
     except Exception:
+        return Exception:
         return
     
     if msg_id not in ORDER_CACHE:
