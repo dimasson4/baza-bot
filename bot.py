@@ -148,7 +148,6 @@ def execute_order_callback(call):
     
     endpoints = [
         "https://dzengi.com",
-        "https://currency.com"
     ]
     
     success = False
