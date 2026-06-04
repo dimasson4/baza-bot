@@ -6,21 +6,17 @@ import json
 import telebot
 import requests
 from threading import Thread
-from huggingface_hub import InferenceClient
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-HF_API_KEY = os.environ.get("HF_API_KEY")
+SAMBANOVA_API_KEY = os.environ.get("HF_API_KEY")
 DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
 DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
 
-bot = telebot.TeleBot(BOT_TOKEN)
+# Ваша константа маржинального счета с Dzengi.com
+MY_ACCOUNT_ID = "00a05508-0079-54c4-0000-000081b03ea7"
 
-# Официальный клиент Hugging Face Hub
-client = InferenceClient(
-    model="meta-llama/Llama-3.3-70B-Instruct",
-    token=HF_API_KEY
-)
+bot = telebot.TeleBot(BOT_TOKEN)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -94,18 +90,28 @@ def handle_market_log(message):
         bot.send_message(chat_id, "⚠️ *ТОРГОВЛЯ ЗАБЛОКИРОВАНА!*\nАктивирован режим Emergency Stop. Сигнал рынка проигнорирован.", parse_mode="Markdown")
         return
 
-    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через официальный шлюз HF Hub...*", parse_mode="Markdown")
+    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через скоростной безлимитный шлюз...*", parse_mode="Markdown")
     full_prompt = f"{PROTOCOL_V14_4}\n\nВОТ СВЕЖИЙ ЛОГ ДЛЯ АНАЛИЗА:\n{message.text}"
     
     try:
-        # Запрос идет строго через официальный SDK клиента Hugging Face
-        response = client.chat_completion(
-            messages=[{"role": "user", "content": full_prompt}],
-            max_tokens=1000,
-            temperature=0.1
+        response = requests.post(
+            "https://sambanova.ai",
+            headers={"Authorization": f"Bearer {SAMBANOVA_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "Meta-Llama-3.1-70B-Instruct", "messages": [{"role": "user", "content": full_prompt}], "temperature": 0.1},
+            timeout=12
         )
-        ai_text = response['choices'][0]['message']['content']
-        
+        status, response_text = response.status_code, response.text
+    except Exception as e:
+        bot.edit_message_text(f"❌ Сбой шлюза ИИ: {str(e)}", chat_id, status_msg.message_id)
+        return
+
+    if status != 200:
+        bot.edit_message_text(f"❌ Сбой шлюза ИИ (Код {status}).", chat_id, status_msg.message_id)
+        return
+
+    try:
+        result = json.loads(response_text)
+        ai_text = result['choices']['message']['content']
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_operator_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
         bot.delete_message(chat_id, status_msg.message_id)
@@ -121,9 +127,8 @@ def handle_market_log(message):
             bot.send_message(chat_id, clean_operator_text, reply_markup=keyboard, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, clean_operator_text)
-            
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка шлюза HF Hub: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка обработки: {str(e)}", chat_id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
@@ -139,14 +144,13 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
     status_msg = bot.send_message(chat_id, f"⏳ _Отправляю приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
-    # Официальный торговый адаптер левередж-рынка Dzengi
-    base_url = "https://api-adapter.dzengi.com"
+    base_url = "https://dzengi.com"
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Формируем query_string с маржинальным суффиксом контракта
-    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&quantity={lot}&type=MARKET&timestamp={timestamp}"
+    # Вшиваем скопированный MY_ACCOUNT_ID и контракт LEVERAGE
+    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
     signature = hmac.new(
         DZENGI_SECRET_KEY.encode('utf-8'),
@@ -162,7 +166,7 @@ def execute_order_callback(call):
     
     try:
         response = requests.post(full_url, headers=headers, timeout=10)
-        raw_text = response.text  # Захватываем сырой ответ для диагностики
+        raw_text = response.text
         
         try:
             res_data = response.json()
