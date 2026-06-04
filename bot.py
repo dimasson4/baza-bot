@@ -28,6 +28,15 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
+# Перехватчик ошибок для гашения конфликтов 409 при деплое
+@bot.custom_errorhandler()
+def handle_polling_errors(exception):
+    if "409" in str(exception):
+        print("⚠️ Уведомление: Старая сессия закрыта новым контейнером (Ожидаемо при деплое).")
+        return True
+    print(f"❌ Непредвиденная ошибка поллинга: {exception}")
+    return False
+
 @bot.message_handler(func=lambda message: "ETH/USD" in message.text)
 def handle_market_log(message):
     chat_id = message.chat.id
