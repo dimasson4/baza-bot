@@ -14,7 +14,7 @@ HF_API_KEY = os.environ.get("HF_API_KEY")
 DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
 DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
 
-# Вшиваем ваш точный маржинальный ID аккаунта Dzengi
+# Ваша константа маржинального счета с Dzengi.com
 MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -106,7 +106,7 @@ def handle_market_log(message):
             max_tokens=1000,
             temperature=0.1
         )
-        ai_text = response.choices[0].message.content
+        ai_text = response.choices.message.content
         
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_operator_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
@@ -123,8 +123,10 @@ def handle_market_log(message):
             bot.send_message(chat_id, clean_operator_text, reply_markup=keyboard, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, clean_operator_text)
+            
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка обработки: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка шлюза HF Hub: {str(e)}", chat_id, status_msg.message_id)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
     _, direction, entry_price, lot = call.data.split("_")
@@ -139,12 +141,10 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
     status_msg = bot.send_message(chat_id, f"⏳ _Отправляю маржинальный приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
-    # Идеально чистый базовый адрес без параметров в URL
-    full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Собираем параметры в словарь, чтобы избежать редиректов Cloudflare
+    # Контейнер параметров сделки
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -154,16 +154,13 @@ def execute_order_callback(call):
         "timestamp": timestamp
     }
     
-    # Формируем строку подписи строго по документации Dzengi
+    # Строка подписи по спецификации Binance/Dzengi REST Core
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
-    
     signature = hmac.new(
         DZENGI_SECRET_KEY.encode('utf-8'),
         query_string.encode('utf-8'),
         digestmod='sha256'
     ).hexdigest()
-    
-    # Добавляем подпись в контейнер параметров
     payload["signature"] = signature
     
     headers = {
@@ -171,35 +168,45 @@ def execute_order_callback(call):
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    try:
-        # Передаем параметры в теле data, сохраняя URL девственно чистым
-        response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
-        raw_text = response.text
-        
+    # 🚨 СПИСОК АДРЕСОВ ДЛЯ АВТО-ОБХОДА БЛОКИРОВОК (ОСНОВНОЙ И РЕЗЕРВНЫЙ)
+    endpoints = [
+        "https://dzengi.com",
+        "https://currency.com"
+    ]
+    
+    success = False
+    raw_text = "Нет ответа"
+    status_code = 0
+    
+    for url in endpoints:
         try:
-            res_data = response.json()
-        except:
-            res_data = {}
+            response = requests.post(url, headers=headers, data=payload, timeout=8)
+            status_code = response.status_code
+            raw_text = response.text
             
-        if response.status_code == 200:
-            bot.edit_message_text(
-                f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
-                f"🔹 *Инструмент:* ETH/USD (Leverage)\n"
-                f"🔹 *Направление:* `{direction}`\n"
-                f"🔹 *Объем:* `{lot} ETH`\n"
-                f"🔹 *Статус:* `Успешно отправлен в ядро`",
-                chat_id, status_msg.message_id, parse_mode="Markdown"
-            )
-        else:
-            short_error = response.text[:200] if response.text else "Пустой ответ"
-            bot.edit_message_text(
-                f"❌ *Отказано биржей Dzengi!*\n"
-                f"🔹 Код HTTP: `{response.status_code}`\n"
-                f"🔹 Ошибка: `{short_error}`",
-                chat_id, status_msg.message_id, parse_mode="Markdown"
-            )
-    except Exception as e:
-        bot.edit_message_text(f"❌ *Сбой моста:* {str(e)}", chat_id, status_msg.message_id)
+            if status_code == 200:
+                success = True
+                break
+        except:
+            continue
+            
+    if success:
+        bot.edit_message_text(
+            f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
+            f"🔹 *Инструмент:* ETH/USD (Leverage)\n"
+            f"🔹 *Направление:* `{direction}`\n"
+            f"🔹 *Объем:* `{lot} ETH`\n"
+            f"🔹 *Статус:* `Успешно проведен через API-мост`",
+            chat_id, status_msg.message_id, parse_mode="Markdown"
+        )
+    else:
+        short_error = raw_text[:200] if raw_text else "Пустой ответ"
+        bot.edit_message_text(
+            f"❌ *Отказано торговым ядром!*\n"
+            f"🔹 Код HTTP: `{status_code}`\n"
+            f"🔹 Ответ: `{short_error}`",
+            chat_id, status_msg.message_id, parse_mode="Markdown"
+        )
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
