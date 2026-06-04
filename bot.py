@@ -98,7 +98,7 @@ def execute_order_callback(call):
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # 1. Формируем словарь параметров для тела запроса и подписи
+    # Формируем словарь параметров ордера для тела запроса
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -108,21 +108,21 @@ def execute_order_callback(call):
         "timestamp": timestamp
     }
     
-    # 2. Строим строку запроса для генерации подписи HMAC ( requests сделает urlencode автоматически при отправке )
+    # Строим валидную строку для генерации подписи HMAC
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
     
-    # 3. Добавляем сгенерированную подпись в payload данных
+    # Передаем сгенерированную подпись в словарь данных
     payload["signature"] = signature
     
-    # 4. Задаем строгие заголовки
+    # Выставляем строго требуемые платформой Dzengi заголовки
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     try:
-        # 5. Отправляем запрос с чистым URL и параметрами в data
+        # Отправляем POST-запрос с чистым URL и параметрами строго внутри data=payload
         response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО", chat_id, status_msg.message_id)
@@ -132,7 +132,16 @@ def execute_order_callback(call):
         bot.edit_message_text(f"❌ СБОЙ: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
+    # Принудительно разрываем старые сессии Telegram перед запуском поллинга
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+    except:
+        pass
+        
+    # Запуск фонового веб-сервера (Health Check)
     server_thread = Thread(target=run_health_server)
     server_thread.daemon = True
     server_thread.start()
-    bot.infinity_polling(skip_pending=True)
+    
+    # Старт поллинга с фильтрацией дублирующихся инстансов
+    bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=10)
