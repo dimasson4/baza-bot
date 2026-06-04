@@ -59,11 +59,12 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """Отправка маржинального приказа LIMIT через официальный api-adapter шлюз."""
-    endpoint = "/api/v1/order"
+    """Отправка маржинального приказа LIMIT на специализированный эндпоинт leverageOrder."""
+    # ИСПРАВЛЕНО: для маржинальных пар с _LEVERAGE используется строго /api/v1/leverageOrder
+    endpoint = "/api/v1/leverageOrder"
     timestamp = int(time.time() * 1000)
     
-    # Сборка сырых параметров для вычисления подписи (слэш в инструменте НЕ экранируется)
+    # Сборка сырых параметров для вычисления подписи
     raw_params = {
         "symbol": "ETH/USD_LEVERAGE",
         "accountId": MY_ACCOUNT_ID,
@@ -78,7 +79,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # Сборка параметров для URL-строки (слэш экранируется строго как %2F для адаптера)
+    # Сборка параметров для URL-строки запроса
     url_params = {
         "symbol": "ETH%2FUSD_LEVERAGE",
         "accountId": MY_ACCOUNT_ID,
@@ -101,7 +102,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка приказа на {full_url}")
+            logger.info(f"[API_REQUEST] Отправка маржинального приказа на {full_url}")
             async with session.post(full_url, data=None, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
