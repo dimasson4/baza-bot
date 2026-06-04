@@ -135,4 +135,4 @@ if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
     server_thread.daemon = True
     server_thread.start()
-    bot.infinity_polling()
+    bot.infinity_polling(skip_pending=True)
