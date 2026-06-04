@@ -94,47 +94,48 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
     status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
     
-    # 1. Используем точный боевой поддомен REST API Dzengi
     full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # 2. Формируем тело запроса. requests автоматически закодирует ETH/USD_LEVERAGE в ETH%2FUSD_LEVERAGE
+    # 1. Формируем словарь параметров сделки. Все значения приводим к строкам, как требует API Dzengi
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
-        "accountId": MY_ACCOUNT_ID,
-        "quantity": float(lot),
+        "accountId": str(MY_ACCOUNT_ID),
+        "quantity": str(lot),
         "type": "MARKET",
-        "timestamp": timestamp
+        "timestamp": str(timestamp)
     }
     
-    # 3. Подготавливаем строку для подписи (urlencode) в строгом соответствии с переданным словарем
-    prepared_request = requests.models.PreparedRequest()
-    prepared_request.prepare_body(data=payload, files=None)
-    data_string = prepared_request.body  # Результат: строка вида "symbol=ETH%2FUSD_LEVERAGE&side=..."
+    # 2. Строим точную строку параметров для генерации валидной HMAC-SHA256 подписи
+    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
+    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
     
-    # 4. Вычисляем HMAC SHA256 подпись
-    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), data_string.encode('utf-8'), digestmod='sha256').hexdigest()
-    
-    # 5. Добавляем подпись в тело payload данных
+    # 3. Внедряем подпись в тело payload данных
     payload["signature"] = signature
     
-    # 6. Выставляем строго требуемые заголовки
+    # 4. ДОБАВЛЕН USER-AGENT: Имитируем реальный браузер, чтобы Cloudflare не «вешал» POST-запрос намертво
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        # 7. Отправляем POST-запрос с девственно чистым URL
-        response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
+        # 5. Выполняем POST-запрос с жестким таймаутом на чтение (чтобы бот не зависал бесконечно)
+        response = requests.post(full_trading_url, headers=headers, data=payload, timeout=(5, 10))
+        
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО ИСПОЛНЕНО", chat_id, status_msg.message_id)
         else:
-            bot.edit_message_text(f"❌ ОТКАЗ API DZENGi: {response.status_code}\nОтвет: {response.text[:150]}", chat_id, status_msg.message_id)
+            # Если биржа отклонит — мы мгновенно увидим причину (например, рассинхрон таймстампа или баланс)
+            bot.edit_message_text(f"❌ ОТКАЗ API DZENGi (Код {response.status_code}):\n{response.text[:150]}", chat_id, status_msg.message_id)
+            
+    except requests.exceptions.Timeout:
+        bot.edit_message_text(f"❌ ОШИБКА: Превышено время ожидания ответа от Dzengi (Таймаут Cloudflare).", chat_id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ СБОЙ СЕТИ: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ СБОЙ ЗАПРОСА: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
