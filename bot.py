@@ -40,13 +40,11 @@ def handle_market_log(message):
     chat_id = message.chat.id
     log_text = message.text
 
-    # 🚨 ПРОВЕРКА РУБИЛЬНИКА EMERGENCY STOP ПЕРЕД ЛЮБЫМИ ДЕЙСТВИЯМИ
     current_status = os.environ.get("TRADING_STATUS", "ON").strip().upper()
     if current_status == "OFF":
         bot.send_message(chat_id, "⚠️ *ТОРГОВЛЯ ЗАБЛОКИРОВАНА!*\nАктивирован удаленный режим `Emergency Stop`.", parse_mode="Markdown")
         return
 
-    # 1. СВЕРХТОЧНЫЙ МАТЕМАТИЧЕСКИЙ ПАРСИНГ ЛОГА СКРИПТОМ PYTHON
     try:
         price_match = re.search(r"Цена:\s*([\d.]+)", log_text)
         price = float(price_match.group(1)) if price_match else None
@@ -62,7 +60,6 @@ def handle_market_log(message):
             bot.send_message(chat_id, "❌ *Ошибка*: В логе не найдена текущая цена инструмента.")
             return
 
-        # 2. ЖЕСТКИЙ АЛГОРИТМ ПРИНЯТИЯ РЕШЕНИЙ (ПРОТОКОЛ v14.4)
         direction = None
         if is_bearish and sell_pct >= 60:
             direction = "SHORT"
@@ -70,11 +67,10 @@ def handle_market_log(message):
             direction = "LONG"
 
         if not direction:
-            bot.send_message(chat_id, f" ВЕРДИКТ: ВХОД ЗАПРЕЩЕН.\nПричина: Нет условий по тренду или перекосу стакана (Покупки: {buy_pct}%, Продажи: {sell_pct}%).")
+            bot.send_message(chat_id, f"ВЕРДИКТ: ВХОД ЗАПРЕЩЕН.\nПричина: Нет условий по тренду или перекосу стакана (Покупки: {buy_pct}%, Продажи: {sell_pct}%).")
             return
 
-        # 3. АПТЕЧНЫЙ РАСЧЕТ МАТРИЦЫ ОРДЕРОВ ПО ФОРМУЛАМ
-        balance = 67.58  # Базовый баланс fallback
+        balance = 67.58  # Ваш реальный баланс
         lot = round((balance * 0.02) / (18.50 * 1.02), 3)
         if lot < 0.001:
             lot = 0.001
@@ -88,16 +84,15 @@ def handle_market_log(message):
             sl = round(price - 18.50, 2)
             tp = round(price + 37.00, 2)
 
-        # 4. ФОРМИРОВАНИЕ ПУБЛИЧНОГО ДАШБОРД-ИНТЕРФЕЙСА ОПЕРАТОРА
         dashboard = (
-            f"### 📊 ВИЗУАЛЬНЫЙ ДАШБОРД ОПЕРАТОРА\n"
-            f"* **Действие:** {action_text}\n"
-            f"* **Инструмент:** ETH/USD (Плечо: Изолированное х10)\n"
-            f"* **Размер позиции:** {lot} ETH (Баланс: {balance} USD)\n"
-            f"* **Цена входа:** `{price}`\n"
-            f"* **Защитный стоп (SL):** `{sl}`\n"
-            f"* **Цель прибыли (TP):** `{tp}`\n"
-            f"* **Безопасность:** МАТЕМАТИЧЕСКИЙ СЕЛФ-ТЕСТ ПРОЙДЕН"
+            f"📊 ВИЗУАЛЬНЫЙ ДАШБОРД ОПЕРАТОРА:\n"
+            f"* Действие: {action_text}\n"
+            f"* Инструмент: ETH/USD (Плечо: Изолированное х10)\n"
+            f"* Размер позиции: {lot} ETH (Баланс: {balance} USD)\n"
+            f"* Цена входа: {price}\n"
+            f"* Защитный стоп (SL): {sl}\n"
+            f"* Цель прибыли (TP): {tp}\n"
+            f"* Безопасность: МАТЕМАТИЧЕСКИЙ СЕЛФ-ТЕСТ ПРОЙДЕН"
         )
 
         keyboard = telebot.types.InlineKeyboardMarkup()
@@ -147,18 +142,23 @@ def execute_order_callback(call):
     headers = {"X-MBX-APIKEY": DZENGI_API_KEY, "Content-Type": "application/x-www-form-urlencoded"}
     
     endpoints = [
-        "https://dzengi.com",
+        "https://dzengi.com"
     ]
     
     success = False
+    raw_response = "Нет ответа"
+    status_code = 0
     
     for target_url in endpoints:
         try:
             response = requests.post(target_url, headers=headers, data=payload, timeout=8)
-            if response.status_code == 200:
+            status_code = response.status_code
+            raw_response = response.text
+            if status_code == 200:
                 success = True
                 break
-        except:
+        except Exception as e:
+            raw_response = str(e)
             continue
 
     if success:
@@ -167,9 +167,11 @@ def execute_order_callback(call):
             chat_id, status_msg.message_id, parse_mode="Markdown"
         )
     else:
-    # Выводим в чат первые 200 символов реального ответа биржи для точной диагностики
-    error_text = response.text[:200] if 'response' in locals() else "Нет сетевого ответа от серверов Dzengi"
-    bot.edit_message_text(f"❌ *Отказ Dzengi:* `{error_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
+        short_error = raw_response[:200] if raw_response else "Пустой ответ"
+        bot.edit_message_text(
+            f"❌ *Отказано торговым ядром биржи!*\n🔹 Код HTTP: `{status_code}`\n🔹 Ответ Dzengi: `{short_error}`",
+            chat_id, status_msg.message_id, parse_mode="Markdown"
+        )
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
