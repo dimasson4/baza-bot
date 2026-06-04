@@ -210,26 +210,36 @@ async def handle_signal_message(message: types.Message):
 
 @dp.callback_query(F.data.startswith("exec_"))
 async def process_order_execution(callback: types.CallbackQuery):
+    # Разбор параметров из callback_data
     _, side, price_str, lot_str = callback.data.split("_")
     
-    await callback.answer("⏳ Ордер отправляется...")
-    res = await send_limit_order(side=side, price=float(price_str), quantity=float(lot_str))
+    # Отправляем всплывающее уведомление, чтобы убрать анимацию часов на кнопке
+    await callback.answer("⏳ Ордер отправляется на платформу Dzengi...")
     
-    if res["status"] in [200, 201]:
-        await callback.message.answer(f"✅ **Ордер исполнен!**\nСторона: `{side}`\nОбъем: `{lot_str}`")
-    else:
-        await callback.message.answer(f"❌ **Ошибка API Dzengi ({res['status']})**\n`{res['data']}`")
-
-# --- Точка входа ---
-
-async def main():
-    await start_web_server()
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Бот готов принимать обновления.")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        # Асинхронный вызов сетевого шлюза к API Dzengi
+        res = await send_limit_order(side=side, price=float(price_str), quantity=float(lot_str))
+        
+        # Исправленная проверка успешных статус-кодов (200 OK)
+        if res.get("status") in [200, 201]:
+            response_msg = (
+                f"✅ **Ордер успешно исполнен на Dzengi.com!**\n\n"
+                f"• Направление: `{side}`\n"
+                f"• Цена (Limit): `{price_str}`\n"
+                f"• Объем: `{lot_str} ETH`\n"
+                f"• Лог ответа: `{res.get('data')}`"
+            )
+        else:
+            response_msg = (
+                f"❌ **Ошибка платформы Dzengi (Код: {res.get('status')})**\n\n"
+                f"Сервер отклонил запрос. Проверьте правильность API-ключей, "
+                f"баланс аккаунта или доступность торговой пары.\n"
+                f"Лог ошибки: `{res.get('data')}`"
+            )
+            
+    except Exception as e:
+        logger.error(f"Критическое исключение при обработке ордера: {str(e)}")
+        response_msg = f"❌ **Критический сбой логики бота!**\nОписание ошибки: `{str(e)}`"
+        
+    # Гарантированная отправка финального сообщения оператору
+    await callback.message.answer(response_msg, parse_mode="Markdown")
