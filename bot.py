@@ -110,7 +110,7 @@ def handle_market_log(message):
         except:
             pass
 
-        bot.send_message(chat_id, dashboard, reply_markup=keyboard, parse_mode="Markdown")
+        bot.send_message(chat_id, dashboard, reply_markup=keyboard)
 
     except Exception as parse_error:
         bot.send_message(chat_id, f"❌ *Ошибка разбора данных алгоритмом:* `{str(parse_error)}`")
