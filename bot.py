@@ -94,12 +94,12 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
     status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
     
-    # ИСПРАВЛЕНО: Официальный боевой поддомен API-адаптера Dzengi
+    # 1. Используем точный боевой поддомен REST API Dzengi
     full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Параметры сделки для x-www-form-urlencoded
+    # 2. Формируем тело запроса. requests автоматически закодирует ETH/USD_LEVERAGE в ETH%2FUSD_LEVERAGE
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -109,25 +109,32 @@ def execute_order_callback(call):
         "timestamp": timestamp
     }
     
-    # Валидная URL-кодированная строка для HMAC-подписи (включая %2F)
-    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
-    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
+    # 3. Подготавливаем строку для подписи (urlencode) в строгом соответствии с переданным словарем
+    prepared_request = requests.models.PreparedRequest()
+    prepared_request.prepare_body(data=payload, files=None)
+    data_string = prepared_request.body  # Результат: строка вида "symbol=ETH%2FUSD_LEVERAGE&side=..."
+    
+    # 4. Вычисляем HMAC SHA256 подпись
+    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), data_string.encode('utf-8'), digestmod='sha256').hexdigest()
+    
+    # 5. Добавляем подпись в тело payload данных
     payload["signature"] = signature
     
-    # Заголовки
+    # 6. Выставляем строго требуемые заголовки
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     try:
+        # 7. Отправляем POST-запрос с девственно чистым URL
         response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
         if response.status_code == 200:
-            bot.edit_message_text(f"✅ УСПЕШНО", chat_id, status_msg.message_id)
+            bot.edit_message_text(f"✅ УСПЕШНО ИСПОЛНЕНО", chat_id, status_msg.message_id)
         else:
-            bot.edit_message_text(f"❌ ОТКАЗ HTTP: {response.status_code}\nОтвет: {response.text[:150]}", chat_id, status_msg.message_id)
+            bot.edit_message_text(f"❌ ОТКАЗ API DZENGi: {response.status_code}\nОтвет: {response.text[:150]}", chat_id, status_msg.message_id)
     except Exception as e:
-        bot.edit_message_text(f"❌ СБОЙ: {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ СБОЙ СЕТИ: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
