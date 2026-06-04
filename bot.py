@@ -59,11 +59,11 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """Отправка маржинального приказа на единый API эндпоинт со строгой сортировкой Query-параметров."""
+    """Отправка маржинального приказа на API Dzengi со строгим типом LIMIT_LEVERAGE."""
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # Слэш в строке параметров для подписи передается как есть (БЕЗ экранирования)
+    # ИСПРАВЛЕНО: для маржинальных пар тип ордера должен быть строго LIMIT_LEVERAGE
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
         "price": f"{price:.2f}",
@@ -71,7 +71,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "side": side,
         "symbol": "ETH/USD_LEVERAGE",
         "timestamp": str(timestamp),
-        "type": "LIMIT"
+        "type": "LIMIT_LEVERAGE"
     }
     
     # 1. Строгая алфавитная сортировка параметров ДЛЯ ПОДПИСИ
@@ -87,24 +87,24 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "side": side,
         "symbol": "ETH%2FUSD_LEVERAGE",
         "timestamp": str(timestamp),
-        "type": "LIMIT"
+        "type": "LIMIT_LEVERAGE"
     }
     # Строго идентичная алфавитная сортировка параметров ДЛЯ URL строки запроса
     sorted_url = sorted(url_params.items())
     query_string = "&".join([f"{k}={urllib.parse.quote(v, safe='%+')}" for k, v in sorted_url])
     
-    # Финальная сборка URL с пустым телом POST-запроса (None) для обхода Cloudflare 405
+    # Финальная сборка URL с пустым телом POST-запроса (None)
     full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка приказа на {full_url}")
+            logger.info(f"[API_REQUEST] Отправка маржинального приказа на {full_url}")
             async with session.post(full_url, data=None, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
