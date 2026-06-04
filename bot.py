@@ -103,14 +103,43 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    async with ClientSession() as session:
+async def get_order_status(order_id: str) -> dict:
+    correct_base_url = "https://api-adapter.dzengi.com"
+    endpoint = "/api/v1/order"
+    timestamp = int(time.time() * 1000)
+    
+    # Формируем обязательные Query-параметры для GET-запроса
+    raw_params = {
+        "orderId": order_id,
+        "recvWindow": "60000",
+        "timestamp": str(timestamp)
+    }
+    
+    # Сортируем и кодируем параметры в строку
+    sorted_params = sorted(raw_params.items())
+    query_string = urllib.parse.urlencode(sorted_params)
+    
+    # Генерируем HMAC-SHA256 подпись
+    signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
+    full_query_with_sig = f"{query_string}&signature={signature}"
+    full_url = f"{correct_base_url}{endpoint}?{full_query_with_sig}"
+    
+    headers = {
+        "X-MBX-APIKEY": DZENGI_API_KEY,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+ async with ClientSession() as session:
         try:
-            # Отправка POST-запроса (параметры внутри Query String гарантируют обработку парсером Dzengi)
-            async with session.post(full_url, headers=headers) as response:
+            # Для проверки статуса используется метод GET
+            async with session.get(full_url, headers=headers) as response:
                 response_text = await response.text()
-                return {"status": response.status, "data": response_text}
+                try:
+                    return {"status": response.status, "data": json.loads(response_text)}
+                except Exception:
+                    return {"status": response.status, "data": {"msg": response_text}}
         except Exception as e:
-            return {"status": 500, "data": str(e)}
+            return {"status": 500, "data": {"msg": str(e)}}
 
 # --- Секция Логики Обработки Сигналов (Мега-Протокол v14.3) ---
 
@@ -257,40 +286,39 @@ async def process_order_execution(callback: types.CallbackQuery):
         raw_data = res.get("data", "Нет данных")
 
         # Анализ результатов ответа шлюза биржи
-        if status_code in [200, 201]:
-            response_msg = (
-                f"✅ **Ордер успешно размещен в стакан платформы!**\n\n"
-                f"• **Направление:** `{side}`\n"
-                f"• **Цена (Limit):** `{price:.2f}`\n"
-                f"• **Объем:** `{lot:.4f} ETH`\n"
-                f"• **Ответ API:** `{raw_data[:150]}`"
-            )
-            await callback.message.answer(response_msg, parse_mode="Markdown")
-            ORDER_CACHE.pop(msg_id, None)  # Защита от Double-Spend
-        else:
-            # Предотвращение поломки лимита 4096 символов Telegram через вынос в error_log.txt
-            response_msg = (
-                f"❌ **Платформа Dzengi отклонила транзакцию! (HTTP {status_code})**\n"
-                f"Технический отчет о причине отказа прикреплен ниже в файле."
-            )
-            await callback.message.answer(response_msg, parse_mode="Markdown")
+        if status_code in (200, 201):
+            # Парсим успешный ответ для извлечения ID ордера
+            try:
+                res_json = json.loads(raw_data)
+                order_id = res_json.get("orderId")
+            except Exception:
+                order_id = None
+
+            if order_id:
+                # Даем торговому ядру Dzengi 1.5 секунды на обработку стакана
+                await asyncio.sleep(1.5)
+                
+                # Запрашиваем реальный статус ордера на бирже
+                status_check = await get_order_status(order_id)
+                order_data = status_check.get("data", {})
+                
+                # Извлекаем финальное состояние (NEW, FILLED, CANCELED, REJECTED)
+                final_status = order_data.get("status", "НЕИЗВЕСТНО (Проверьте терминал)")
+                reject_reason = order_data.get("rejectReason", "Нет")
+                
+                report = (
+                    f"✅ **Запрос принят шлюзом Dzengi**\n"
+                    f"• ID ордера: `{order_id}`\n"
+                    f"• **Текущий статус ордера: `{final_status}`**\n"
+                )
+                if final_status in ("REJECTED", "CANCELED") or reject_reason != "Нет":
+                    report += f"• Причина отмены/отклонения: `{reject_reason}`\n"
+                
+                await callback.message.answer(report, parse_mode="Markdown")
+            else:
+                await callback.message.answer(f"✅ Ордер размещен, но не удалось считать ID:\n{raw_data[:150]}")
             
-            file_buffer = BytesIO(raw_data.encode("utf-8"))
-            file_buffer.name = "error_log.txt"
-            await callback.message.answer_document(
-                document=types.BufferedInputFile(file_buffer.read(), filename="error_log.txt")
-            )
-            
-    except asyncio.TimeoutError:
-        logger.error(f"[GATEWAY_TIMEOUT] Сервер ://dzengi.com не ответил за 8 секунд.")
-        await callback.message.answer(
-            "❌ **Таймаут соединения!**\n"
-            "Удаленный шлюз ://dzengi.com не ответил на запрос за 8 секунд. "
-            "Проверьте настройки сети или статус блокировок."
-        )
-    except Exception as e:
-        logger.error(f"[EXECUTION_CRASH] Критический сбой логики: {str(e)}")
-        await callback.message.answer(f"❌ **Критический внутренний сбой:** `{str(e)}`")
+            ORDER_CACHE.pop(msg_id, None)
 
 # --- Точка запуска и Очистка сетевых шлюзов при деплое на Render ---
 
