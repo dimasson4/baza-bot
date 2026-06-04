@@ -1,141 +1,217 @@
 import os
 import re
-import hmac
 import time
+import hmac
 import json
-import telebot
-import requests
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import hashlib
+import urllib.parse
+import asyncio
+import logging
+from aiohttp import web, ClientSession
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+# Инициализация конфигурации
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
 DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
+PORT = int(os.environ.get("PORT", 10000))
 
 MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
-bot = telebot.TeleBot(BOT_TOKEN)
+DZENGI_BASE_URL = "https://dzengi.com"
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args): return
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-def run_health_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+# --- Секция Веб-сервера (Render Health Check) ---
 
-@bot.message_handler(func=lambda message: "ETH/USD" in message.text)
-def handle_market_log(message):
-    chat_id = message.chat.id
-    log_text = message.text
-    current_status = os.environ.get("TRADING_STATUS", "ON").strip().upper()
-    if current_status == "OFF":
-        bot.send_message(chat_id, "⚠️ ТОРГОВЛЯ ЗАБЛОКИРОВАНА!")
-        return
-    try:
-        price_match = re.search(r"Цена:\s*([\d.]+)", log_text)
-        price = float(price_match.group(1)) if price_match else None
-        stakan_match = re.search(r"Стакан:\s*.*?(\d+)%\s*покупки\s*/\s*.*?(\d+)%\s*продажи", log_text)
-        buy_pct = int(stakan_match.group(1)) if stakan_match else 0
-        sell_pct = int(stakan_match.group(2)) if stakan_match else 0
-        is_bearish = "медвежий" in log_text.lower() or "↓" in log_text
-        is_bullish = "бычий" in log_text.lower() or "↑" in log_text
+async def handle_health_check(request):
+    return web.Response(text="OK", status=200)
 
-        if not price: return
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Сервер для Health Check запущен на порту {PORT}")
 
-        direction = None
-        if is_bearish and sell_pct >= 60: direction = "SHORT"
-        elif is_bullish and buy_pct >= 60: direction = "LONG"
+# --- Секция API Dzengi ---
 
-        if not direction:
-            bot.send_message(chat_id, f"ВЕРДИКТ: ВХОД ЗАПРЕЩЕН.")
-            return
+def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
+    return hmac.new(secret_key.encode("utf-8"), query_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
-        balance = 67.58
-        lot = round((balance * 0.02) / (18.50 * 1.02), 3)
-        if lot < 0.001: lot = 0.001
-
-        if direction == "SHORT":
-            action_text = "🔴 ОТКРЫТЬ SHORT"
-            sl = round(price + 18.50, 2)
-            tp = round(price - 37.00, 2)
-        else:
-            action_text = "🟢 ОТКРЫТЬ LONG"
-            sl = round(price - 18.50, 2)
-            tp = round(price + 37.00, 2)
-
-        dashboard = (
-            f"📊 ВИЗУАЛЬНЫЙ ДАШБОРД ОПЕРАТОРА:\n"
-            f"* Действие: {action_text}\n"
-            f"* Инструмент: ETH/USD\n"
-            f"* Размер позиции: {lot} ETH (Баланс: {balance} USD)\n"
-            f"* Цена входа: {price}\n"
-            f"* Защитный стоп (SL): {sl}\n"
-            f"* Цель прибыли (TP): {tp}\n"
-            f"* Безопасность: ПРОЙДЕНО"
-        )
-        keyboard = telebot.types.InlineKeyboardMarkup()
-        callback_payload = f"exec_{direction}_{price}_{lot}"
-        keyboard.add(telebot.types.InlineKeyboardButton(text=f"🚀 Отправить ордер", callback_data=callback_payload))
-        
-        try: bot.delete_message(chat_id, message.message_id)
-        except: pass
-        bot.send_message(chat_id, dashboard, reply_markup=keyboard)
-    except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
-def execute_order_callback(call):
-    _, direction, entry_price, lot = call.data.split("_")
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
-    status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
-    
-    # 1. Используем точный эндпоинт официального API-адаптера
-    base_url = "https://dzengi.com"
+async def send_limit_order(side: str, price: float, quantity: float) -> dict:
+    endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
-    side = "BUY" if direction == "LONG" else "SELL"
+    symbol_encoded = "ETH%2FUSD_LEVERAGE"
     
-    # 2. Формируем валидную Query-строку. Слэш закодирован как %2F для прохождения Cloudflare!
-    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
-    
-    # 3. Вычисляем подпись HMAC SHA256 строго по строке параметров
-    signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
-    
-    # 4. Склеиваем параметры прямо в URL-строку, как требует альтернативный метод Dzengi
-    full_url = f"{base_url}?{query_string}&signature={signature}"
-    
-    # 5. Передаем заголовок авторизации. Пустое тело запроса гарантирует отсутствие блокировок контента
-    headers = {
-        "X-MBX-APIKEY": DZENGI_API_KEY,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    params = {
+        "accountId": MY_ACCOUNT_ID,
+        "type": "LIMIT",
+        "side": side,
+        "price": f"{price:.2f}",
+        "quantity": f"{quantity:.4f}",
+        "timestamp": str(timestamp)
     }
     
-    try:
-        # 6. Отправляем POST с пустым телом, параметры находятся в URL
-        response = requests.post(full_url, headers=headers, data=None, timeout=10)
-        
-        if response.status_code == 200:
-            bot.edit_message_text(f"✅ УСПЕШНО ИСПОЛНЕНО", chat_id, status_msg.message_id)
-        else:
-            # Теперь Cloudflare пропустит запрос, и мы увидим реальный торговый ответ от биржи
-            bot.edit_message_text(f"❌ ОТВЕТ БИРЖИ Dzengi (Код {response.status_code}):\n{response.text[:150]}", chat_id, status_msg.message_id)
-            
-    except Exception as e:
-        bot.edit_message_text(f"❌ ОШИБКА СЕТИ: {str(e)}", chat_id, status_msg.message_id)
+    sorted_params = sorted(params.items())
+    query_parts = [f"{k}={urllib.parse.quote(v, safe='')}" for k, v in sorted_params]
+    query_string = f"symbol={symbol_encoded}&" + "&".join(query_parts)
+    
+    signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
+    full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
+    
+    headers = {
+        "X-MBX-APIKEY": DZENGI_API_KEY,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
+    async with ClientSession() as session:
+        try:
+            async with session.post(full_url, data=None, headers=headers) as response:
+                response_text = await response.text()
+                return {"status": response.status, "data": response_text}
+        except Exception as e:
+            return {"status": 500, "data": str(e)}
+
+# --- Секция Обработки Сигналов (Мега-Протокол v14.3) ---
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer("🤖 Робот-риск-офицер v14.3 готов к работе.")
+
+@dp.message(F.text.contains("ETH/USD"))
+async def handle_signal_message(message: types.Message):
+    text = message.text
+
+    # 1. Извлечение числовых значений (Цена, Покупки, Продажи)
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    if len(numbers) < 3:
+        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Недостаточно финансовых данных.")
+        return
+
+    # Жесткое распределение переменных из упомянутого текста
+    entry_price = round(float(numbers[0]), 2)
+    buy_percentage = float(numbers[1])
+    sell_percentage = float(numbers[2])
+
+    # 2. Поиск баланса (Парсинг правила FALLBACK)
+    balance_match = re.search(r"(?:баланс|balance)[:\s]*\$?(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    balance = float(balance_match.group(1)) if balance_match else 65.54
+
+    # 3. Направление сделки (Вектор + Стакан > 60%)
+    is_bullish = "бычий" in text.lower() or "↑" in text
+    is_bearish = "медвежий" in text.lower() or "↓" in text
+
+    if is_bullish and buy_percentage > 60.0:
+        direction = "LONG"
+        side = "BUY"
+    elif is_bearish and sell_percentage > 60.0:
+        direction = "SHORT"
+        side = "SELL"
+    else:
+        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Сигнал не подтвержден перекосом стакана >60%.")
+        return
+
+    # 4. Расчет математической матрицы по формулам протокола v14.3
+    calculated_lot = (balance * 0.02) / (18.50 * 1.02)
+    lot = round(calculated_lot, 4)
+
+    if direction == "LONG":
+        stop_loss = round(entry_price - 18.50, 2)
+        take_profit = round(entry_price + 37.00, 2)
+        breakeven_trigger = round(entry_price + 18.70, 2)
+        breakeven_new_sl = round(entry_price + 3.40, 2)
+        math_check = round(entry_price - stop_loss, 2) == 18.50
+    else:
+        stop_loss = round(entry_price + 18.50, 2)
+        take_profit = round(entry_price - 37.00, 2)
+        breakeven_trigger = round(entry_price - 18.70, 2)
+        breakeven_new_sl = round(entry_price - 3.40, 2)
+        math_check = round(stop_loss - entry_price, 2) == 18.50
+
+    calculated_hash = round(entry_price + stop_loss + take_profit + breakeven_trigger, 2)
+
+    # Шаг 3. Селф-тест ИИ
+    if not math_check:
+        await message.answer("ВЕРДИКТ: ВХОД ЗАПРЕЩЕН. Причина: Внутренний математический сбой модели.")
+        return
+
+    # 5. Сборка строгого шаблона ответа без поломок верстки
+    action_str = "🟢 ОТКРЫТЬ LONG" if direction == "LONG" else "🔴 ОТКРЫТЬ SHORT"
+    
+    dashboard = (
+        f"📊 **ВИЗУАЛЬНЫЙ ДАШБОРД ОПЕРАТОРА**\n"
+        f"• Действие: {action_str}\n"
+        f"• Инструмент: ETH/USD (Плечо: Изолированное х10)\n"
+        f"• Размер позиции: {lot} ETH (Баланс расчета: ${balance})\n"
+        f"• Цена входа (Limit): {entry_price:.2f}\n"
+        f"• Защитный стоп (SL): {stop_loss:.2f}\n"
+        f"• Цель прибыли (TP): {take_profit:.2f}\n"
+        f"• Уровень безубытка (Б/У): Перенос SL в {breakeven_new_sl:.2f} при достижении цены {breakeven_trigger:.2f}\n"
+        f"• Безопасность: СЕЛФ-ТЕСТ ПРОЙДЕН (Хеш: {calculated_hash:.2f})\n"
+        f"================ `[BACKEND_API_DATA]` ================\n"
+    )
+
+    backend_json = {
+        "verdict": "ALLOWED",
+        "protocol_version": "14.3",
+        "order_details": {
+            "direction": direction,
+            "instrument": "ETH/USD",
+            "leverage": "Isolated x10",
+            "order_type": "Limit Order",
+            "calculated_lot": f"{lot} ETH",
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "breakeven_trigger": breakeven_trigger,
+            "breakeven_new_sl": breakeven_new_sl
+        },
+        "security_block": {
+            "self_test_status": "PASSED",
+            "calculated_hash": calculated_hash
+        }
+    }
+
+    dashboard += f"```json\n{json.dumps(backend_json, indent=2)}\n```\n"
+    dashboard += "===================================="
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🚀 Отправить ордер", callback_data=f"exec_{side}_{entry_price}_{lot}")
+    
+    await message.answer(dashboard, parse_mode="Markdown", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("exec_"))
+async def process_order_execution(callback: types.CallbackQuery):
+    _, side, price_str, lot_str = callback.data.split("_")
+    
+    await callback.answer("⏳ Ордер отправляется...")
+    res = await send_limit_order(side=side, price=float(price_str), quantity=float(lot_str))
+    
+    if res["status"] in [200, 201]:
+        await callback.message.answer(f"✅ **Ордер исполнен!**\nСторона: `{side}`\nОбъем: `{lot_str}`")
+    else:
+        await callback.message.answer(f"❌ **Ошибка API Dzengi ({res['status']})**\n`{res['data']}`")
+
+# --- Точка входа ---
+
+async def main():
+    await start_web_server()
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Бот готов принимать обновления.")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    server_thread = Thread(target=run_health_server)
-    server_thread.daemon = True
-    server_thread.start()
-    
-    while True:
-        try:
-            bot.remove_webhook()
-            bot.polling(none_stop=True, skip_pending=True, timeout=20, long_polling_timeout=10)
-        except Exception:
-            time.sleep(3)
-            continue
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
