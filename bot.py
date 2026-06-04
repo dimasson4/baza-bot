@@ -139,7 +139,7 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
     status_msg = bot.send_message(chat_id, f"⏳ _Формирую цифровой ордер {direction} для Dzengi..._", parse_mode="Markdown")
     
-    url = "https://currency.com"
+    url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
