@@ -106,7 +106,7 @@ def handle_market_log(message):
             max_tokens=1000,
             temperature=0.1
         )
-        ai_text = response['choices']['message']['content']
+        ai_text = response.choices[0].message.content
         
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_operator_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
