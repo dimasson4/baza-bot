@@ -59,41 +59,44 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    # Исправленный базовый URL торгового адаптера Dzengi
     correct_base_url = "https://api-adapter.dzengi.com"
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # Форматирование числовых значений согласно спецификации контракта инструмента
-    str_price = f"{price:.2f}"
+    # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Округление под Tick Size биржи ---
+    # Для ETH/USD_LEVERAGE на Dzengi шаг цены составляет 0.05.
+    # Округляем до ближайшего кратного 0.05, чтобы избежать ошибки -1030.
+    tick_size = 0.05
+    rounded_price = round(round(price / tick_size) * tick_size, 2)
+    
+    # Преобразуем в строку, убирая лишние нули на конце (например, 3150.50 -> 3150.5)
+    # Если на вашем аккаунте строгий шаг 0.01, замените блок выше на: str_price = f"{price:.2f}"
+    str_price = str(rounded_price).rstrip('0').rstrip('.') if '.' in str(rounded_price) else str(rounded_price)
+    if rounded_price == int(rounded_price):
+        str_price = str(int(rounded_price)) # Если число целое (например 3100), передаем без точек
+        
     str_quantity = f"{quantity:.4f}"
     str_timestamp = str(timestamp)
     
-    # Сбор параметров в словарь (названия ключей чувствительны к регистру)
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
         "leverage": "10",
-        "price": str_price,
+        "price": str_price,        # Отправляем очищенную и округленную цену
         "quantity": str_quantity,
         "recvWindow": "60000",
         "side": side,
-        "symbol": "ETH/USD_LEVERAGE",  # Исходное значение для urlencode
+        "symbol": "ETH/USD_LEVERAGE",
         "timestamp": str_timestamp,
         "type": "LIMIT"
     }
     
-    # Сортировка по ключам в алфавитном порядке и кодирование через urlencode.
-    # Важно: Dzengi ожидает кодирование слэша в верхнем регистре (%2F), что urlencode делает по умолчанию.
+    # Алфавитная сортировка и urlencode
     sorted_params = sorted(raw_params.items())
     query_string = urllib.parse.urlencode(sorted_params)
     
-    # Генерация подписи HMAC-SHA256 на основе получившейся Query-строки
+    # Генерация подписи
     signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
-    
-    # Итоговая строка параметров, отправляемая на сервер, включая подпись
     full_query_with_sig = f"{query_string}&signature={signature}"
-    
-    # Передача параметров в URL-строке для исключения конфликтов десериализации в теле POST-запроса
     full_url = f"{correct_base_url}{endpoint}?{full_query_with_sig}"
     
     headers = {
@@ -104,7 +107,6 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            # Отправляем POST-запрос с пустым телом, так как все параметры переданы в URL
             async with session.post(full_url, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
