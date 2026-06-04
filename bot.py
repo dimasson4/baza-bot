@@ -64,7 +64,7 @@ def handle_market_log(message):
     
     try:
         response = client.chat_completion(messages=[{"role": "user", "content": full_prompt}], max_tokens=1000, temperature=0.1)
-        ai_text = response.choices.message.content
+        ai_text = response[0]['generated_text']
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
         bot.delete_message(chat_id, status_msg.message_id)
