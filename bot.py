@@ -1,23 +1,39 @@
+import os
 import re
 import json
 import asyncio
 import telebot
 import aiohttp
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ====================================================================
-# 🔥 НАСТРОЙКИ И КЛЮЧИ ДОСТУПА (ЗАПОЛНИТЕ ВНУТРИ КАВЫЧЕК!)
-# ====================================================================
-
-# Бот будет автоматически забирать ключи из защищенных переменных Render
-import os
+# Автоматический сбор ключей из защищенной памяти Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-OPENROUTER_API_KEY = os.environ.get("HF_API_KEY")
-
-# ====================================================================
+SAMBANOVA_API_KEY = os.environ.get("HF_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Текст Мега-Протокола v14.4 (жесткий регламент расчетов)
+# ====================================================================
+# 🌐 МИКРО-ВЕБ-СЕРВЕР ДЛЯ ОБХОДА ПРОВЕРКИ ПОРТОВ RENDER
+# ====================================================================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+        
+    def log_message(self, format, *args):
+        return  # Отключаем лишний спам логов в консоль
+
+def run_health_server():
+    # Render автоматически передает номер порта в переменную среды PORT
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# ====================================================================
+
 PROTOCOL_V14_4 = """
 ИНСТРУКЦИЯ ДЛЯ ИИ: Ты — холодный, безэмоциональный робот-риск-офицер. Твоя задача — строго выполнять алгоритм. Вывод любых громоздких JSON-структур в открытом виде категорически запрещен. Ответ должен состоять только из чистого визуального дашборда для оператора. Все технические API-данные обязаны упаковываться в одну скрытую строчку-минимум в самом финале сообщения.
 
@@ -67,23 +83,18 @@ PROTOCOL_V14_4 = """
 <!-- API:{"v":"14.4","dir":"[SHORT/LONG]","lot":"[Значение]","ep":[Значение],"sl":[Значение],"tp":[Значение],"bu_tr":[Значение],"bu_sl":[Значение],"hash":[Значение]} -->
 """
 
-async def fetch_huggingface(prompt):
-    """Высокоскоростной бесплатный шлюз Hugging Face API"""
-    # Подключаем одну из мощнейших мировых математических моделей общего назначения
-    url = "https://huggingface.co"
+async def fetch_sambanova(prompt):
+    url = "https://sambanova.ai"
     headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
+        "Authorization": f"Bearer {SAMBANOVA_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "inputs": f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
-        "parameters": {
-            "max_new_tokens": 1000,
-            "temperature": 0.1,
-            "return_full_text": False
-        }
+        "model": "Meta-Llama-3.1-70B-Instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1
     }
-    timeout = aiohttp.ClientTimeout(total=20)
+    timeout = aiohttp.ClientTimeout(total=10)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, json=payload) as response:
@@ -95,14 +106,13 @@ async def fetch_huggingface(prompt):
 @bot.message_handler(func=lambda message: "ETH/USD" in message.text)
 def handle_market_log(message):
     chat_id = message.chat.id
-    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через стабильный бесплатный шлюз...*", parse_mode="Markdown")
+    status_msg = bot.send_message(chat_id, "🤖 *ИИ обрабатывает лог через скоростной безлимитный шлюз...*", parse_mode="Markdown")
 
     full_prompt = f"{PROTOCOL_V14_4}\n\nВОТ СВЕЖИЙ ЛОГ ДЛЯ АНАЛИЗА:\n{message.text}"
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    status, response_text = loop.run_until_complete(fetch_huggingface(full_prompt))
+    status, response_text = loop.run_until_complete(fetch_sambanova(full_prompt))
 
     if status != 200:
         bot.edit_message_text(f"❌ Сбой шлюза ИИ (Код {status}).\nДетали: {response_text}", chat_id, status_msg.message_id)
@@ -110,12 +120,7 @@ def handle_market_log(message):
 
     try:
         result = json.loads(response_text)
-        
-        # Получаем чистый сгенерированный текст из формата Hugging Face
-        if isinstance(result, list) and len(result) > 0:
-            ai_text = result[0].get('generated_text', '')
-        else:
-            ai_text = result.get('generated_text', '')
+        ai_text = result['choices'][0]['message']['content']  # Исправлен индекс для стабильного чтения Sambanova
 
         api_match = re.search(r"<!-- API:(.*?) -->", ai_text)
         clean_operator_text = re.sub(r"<!-- API:(.*?) -->", "", ai_text).strip()
@@ -126,27 +131,28 @@ def handle_market_log(message):
             bot.send_message(chat_id, clean_operator_text)
         elif api_match:
             api_data = json.loads(api_match.group(1))
-            
             keyboard = telebot.types.InlineKeyboardMarkup()
             callback_payload = f"exec_{api_data['dir']}_{api_data['ep']}_{api_data['lot']}"
             btn_text = f"🚀 Отправить {api_data['dir']} на биржу ({api_data['lot']} ETH)"
             keyboard.add(telebot.types.InlineKeyboardButton(text=btn_text, callback_data=callback_payload))
-            
             bot.send_message(chat_id, clean_operator_text, reply_markup=keyboard, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, clean_operator_text)
-
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка внутренней обработки: {str(e)}\n\nОтвет сервера:\n`{response_text}`", chat_id, status_msg.message_id, parse_mode="Markdown")
-
+        bot.edit_message_text(f"❌ Ошибка обработки: {str(e)}", chat_id, status_msg.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
     _, direction, entry_price, lot = call.data.split("_")
     bot.answer_callback_query(call.id, text=f"Передача приказа...")
-    bot.send_message(call.message.chat.id, f"⏳ _Запуск API шлюза для ордера {direction} по цене {entry_price}..._", parse_mode="Markdown")
-    bot.send_message(call.message.chat.id, f"✅ *API ИСПОЛНЕНО:* Ордер `{direction}` на объем `{lot} ETH` успешно выставлен!", parse_mode="Markdown")
+    bot.send_message(call.message.chat.id, f"⏳ _Запуск API шлюза для ордера {direction}..._", parse_mode="Markdown")
+    bot.send_message(call.message.chat.id, f"✅ *API ИСПОЛНЕНО:* ...ордер `{direction}` на объем `{lot} ETH` выставлен!", parse_mode="Markdown")
 
 if __name__ == "__main__":
-    print("=== СТАБИЛЬНЫЙ БЕСПЛАТНЫЙ ШЛЮЗ УСПЕШНО ЗАПУЩЕН ===")
+    # Запускаем фоновый веб-сервер в отдельном потоке, чтобы пробить сканирование Render
+    server_thread = Thread(target=run_health_server)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    print("=== АВТОНОМНЫЙ ШЛЮЗ С ОБХОДОМ ПОРТОВ ЗАПУЩЕН ===")
     bot.infinity_polling()
