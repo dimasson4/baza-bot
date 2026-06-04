@@ -137,12 +137,14 @@ def execute_order_callback(call):
         return
         
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
-    status_msg = bot.send_message(chat_id, f"⏳ _Формирую цифровой ордер {direction} для Dzengi..._", parse_mode="Markdown")
+    status_msg = bot.send_message(chat_id, f"⏳ _Отправляю приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
+    # Официальный торговый адаптер левередж-рынка Dzengi
     url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
+    # Формируем query_string с маржинальным суффиксом контракта
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId=0&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
     signature = hmac.new(
@@ -159,22 +161,31 @@ def execute_order_callback(call):
     
     try:
         response = requests.post(full_url, headers=headers, timeout=10)
-        res_data = response.json()
+        raw_text = response.text  # Захватываем сырой ответ для диагностики
         
+        try:
+            res_data = response.json()
+        except:
+            res_data = {}
+            
         if response.status_code == 200 and "orderId" in res_data:
             bot.edit_message_text(
                 f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
-                f"🔹 *Инструмент:* ETH/USD\n"
+                f"🔹 *Инструмент:* ETH/USD (Leverage)\n"
                 f"🔹 *Направление:* `{direction}`\n"
                 f"🔹 *Объем:* `{lot} ETH`\n"
                 f"🔹 *ID Ордера:* `{res_data.get('orderId')}`",
                 chat_id, status_msg.message_id, parse_mode="Markdown"
             )
         else:
-            error_msg = res_data.get("msg", "Неизвестная ошибка биржи")
-            bot.edit_message_text(f"❌ *Биржа отклонила приказ!*\nПричина: `{error_msg}`", chat_id, status_msg.message_id, parse_mode="Markdown")
+            bot.edit_message_text(
+                f"❌ *Отказано биржей Dzengi!*\n"
+                f"🔹 Код HTTP: `{response.status_code}`\n"
+                f"🔹 Ответ сервера: `{raw_text if raw_text else 'Пустое тело ответа'}`",
+                chat_id, status_msg.message_id, parse_mode="Markdown"
+            )
     except Exception as e:
-        bot.edit_message_text(f"❌ *Сбой сетевого моста биржи:* {str(e)}", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"❌ *Сбой моста:* {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
     server_thread = Thread(target=run_health_server)
