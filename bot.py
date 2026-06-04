@@ -59,39 +59,41 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """Отправка маржинального приказа LIMIT на специализированный эндпоинт leverageOrder."""
-    # ИСПРАВЛЕНО: для маржинальных пар с _LEVERAGE используется строго /api/v1/leverageOrder
-    endpoint = "/api/v1/leverageOrder"
+    """Отправка маржинального приказа на единый API эндпоинт со строгой сортировкой Query-параметров."""
+    endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # Сборка сырых параметров для вычисления подписи
+    # Слэш в строке параметров для подписи передается как есть (БЕЗ экранирования)
     raw_params = {
-        "symbol": "ETH/USD_LEVERAGE",
         "accountId": MY_ACCOUNT_ID,
-        "type": "LIMIT",
-        "side": side,
         "price": f"{price:.2f}",
         "quantity": f"{quantity:.4f}",
-        "timestamp": str(timestamp)
+        "side": side,
+        "symbol": "ETH/USD_LEVERAGE",
+        "timestamp": str(timestamp),
+        "type": "LIMIT"
     }
     
+    # 1. Строгая алфавитная сортировка параметров ДЛЯ ПОДПИСИ
     sorted_raw = sorted(raw_params.items())
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # Сборка параметров для URL-строки запроса
+    # 2. Формирование строки для URL (Где слэш превращается в %2F)
     url_params = {
-        "symbol": "ETH%2FUSD_LEVERAGE",
         "accountId": MY_ACCOUNT_ID,
-        "type": "LIMIT",
-        "side": side,
         "price": f"{price:.2f}",
         "quantity": f"{quantity:.4f}",
-        "timestamp": str(timestamp)
+        "side": side,
+        "symbol": "ETH%2FUSD_LEVERAGE",
+        "timestamp": str(timestamp),
+        "type": "LIMIT"
     }
+    # Строго идентичная алфавитная сортировка параметров ДЛЯ URL строки запроса
     sorted_url = sorted(url_params.items())
     query_string = "&".join([f"{k}={urllib.parse.quote(v, safe='%+')}" for k, v in sorted_url])
     
+    # Финальная сборка URL с пустым телом POST-запроса (None) для обхода Cloudflare 405
     full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
@@ -102,7 +104,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка маржинального приказа на {full_url}")
+            logger.info(f"[API_REQUEST] Отправка приказа на {full_url}")
             async with session.post(full_url, data=None, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
