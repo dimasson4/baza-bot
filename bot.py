@@ -74,7 +74,7 @@ def handle_market_log(message):
             return
 
         # 3. АПТЕЧНЫЙ РАСЧЕТ МАТРИЦЫ ОРДЕРОВ ПО ФОРМУЛАМ
-        balance = 65.54  # Базовый баланс fallback
+        balance = 10.00  # Базовый баланс fallback
         lot = round((balance * 0.02) / (18.50 * 1.02), 3)
         if lot < 0.001:
             lot = 0.001
