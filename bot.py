@@ -10,6 +10,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Автоматический сбор ключей из защищенной памяти Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SAMBANOVA_API_KEY = os.environ.get("HF_API_KEY")
+HF_API_KEY = os.environ.get("HF_API_KEY")
+
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
