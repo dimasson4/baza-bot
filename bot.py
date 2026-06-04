@@ -61,20 +61,19 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     """
     Отправка маржинального приказа LIMIT согласно строгой спецификации Dzengi API POST.
-    Параметры передаются строго внутри тела payload (data=payload_body), а не в URL-строке.
+    Параметры передаются строго внутри тела payload (data=payload_body) на официальный торговый домен.
     """
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # Жесткая строковая фиксация float-значений
     str_price = f"{price:.2f}"
     str_quantity = f"{quantity:.4f}"
     str_timestamp = str(timestamp)
     
-    # 1. Формирование упорядоченных параметров ДЛЯ ПОДПИСИ (Слэш в symbol НЕ экранируется)
+    # 1. Формирование упорядоченных параметров для подписи (Слэш в symbol НЕ экранируется)
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
-        "leverage": "10",  # Изолированное маржинальное плечо по протоколу
+        "leverage": "10",
         "price": str_price,
         "quantity": str_quantity,
         "recvWindow": "60000",
@@ -84,13 +83,12 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "type": "LIMIT"
     }
     
-    # Строгая алфавитная сортировка ключей для вычисления валидной HMAC SHA256 подписи
+    # Алфавитная сборка строки параметров для генерации HMAC SHA256 подписи
     sorted_raw = sorted(raw_params.items())
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # 2. Формирование строки параметров ДЛЯ ТЕЛА ЗАПРОСА (Слэш кодируется как %2F)
-    # Порядок следования параметров ОБЯЗАТЕЛЬНО должен быть строго алфавитным!
+    # 2. Формирование тела POST-запроса (Слэш кодируется как %2F для передачи данных)
     url_parts = [
         f"accountId={MY_ACCOUNT_ID}",
         "leverage=10",
@@ -98,7 +96,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         f"quantity={str_quantity}",
         "recvWindow=60000",
         f"side={side}",
-        "symbol=ETH%2FUSD_LEVERAGE",  # Экранирование слэша
+        "symbol=ETH%2FUSD_LEVERAGE",  # Экранирование для WAF Cloudflare
         f"timestamp={str_timestamp}",
         "type=LIMIT"
     ]
@@ -106,7 +104,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     # Склеиваем тело и ОБЯЗАТЕЛЬНО добавляем параметр signature в самый конец payload
     payload_body = "&".join(url_parts) + f"&signature={signature}"
     
-    # ИСПРАВЛЕНО: Чистый базовый адрес официального шлюза-адаптера БЕЗ параметров в URL строке
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Переключение на официальный боевой торговый домен Dzengi API
     REAL_DZENGI_URL = "https://dzengi.com"
     full_url = f"{REAL_DZENGI_URL}{endpoint}"
     
@@ -118,8 +116,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка каноничного POST приказа на {full_url}")
-            # Параметры передаются в аргумент data, URL строка остается абсолютно чистой
+            logger.info(f"[API_REQUEST] Отправка маржинального POST приказа на {full_url}")
             async with session.post(full_url, data=payload_body, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
