@@ -146,7 +146,7 @@ def execute_order_callback(call):
     side = "BUY" if direction == "LONG" else "SELL"
     
     # Формируем query_string с маржинальным суффиксом контракта
-    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId=0&quantity={lot}&type=MARKET&timestamp={timestamp}"
+    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
     signature = hmac.new(
         DZENGI_SECRET_KEY.encode('utf-8'),
