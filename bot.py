@@ -24,7 +24,7 @@ DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Фиксированные константы торговой платформы
-MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
+MY_ACCOUNT_ID = "4295225058470143566"
 # ИСПРАВЛЕНО: Установлен официальный домен для торговых SIGNED-запросов
 DZENGI_BASE_URL = "https://api-adapter.backend.dzengi.com"
 
