@@ -63,25 +63,23 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
-    # --- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Округление под Tick Size биржи ---
-    # Для ETH/USD_LEVERAGE на Dzengi шаг цены составляет 0.05.
-    # Округляем до ближайшего кратного 0.05, чтобы избежать ошибки -1030.
-    tick_size = 0.05
-    rounded_price = round(round(price / tick_size) * tick_size, 2)
+    # --- СТРОГОЕ ИСПРАВЛЕНИЕ ДЛЯ DZENGI API (-1030) ---
+    # 1. Биржа требует логику round_up при несоответствии точности (quotePrecision = 2).
+    # Для этого используем математическое смещение на бесконечно малую величину перед округлением.
+    rounded_price = round(price + 0.0001, 2)
     
-    # Преобразуем в строку, убирая лишние нули на конце (например, 3150.50 -> 3150.5)
-    # Если на вашем аккаунте строгий шаг 0.01, замените блок выше на: str_price = f"{price:.2f}"
-    str_price = str(rounded_price).rstrip('0').rstrip('.') if '.' in str(rounded_price) else str(rounded_price)
-    if rounded_price == int(rounded_price):
-        str_price = str(int(rounded_price)) # Если число целое (например 3100), передаем без точек
-        
+    # 2. Критически важно: Dzengi требует СТРОГОЕ соблюдение quotePrecision в строке.
+    # Нельзя убирать нули через rstrip. Должно быть ровно 2 знака (например, "3150.50", "3100.00").
+    str_price = f"{rounded_price:.2f}"
+    
+    # Спецификация контракта для объема (обычно 4 знака для крипто-пар с плечом)
     str_quantity = f"{quantity:.4f}"
     str_timestamp = str(timestamp)
     
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
         "leverage": "10",
-        "price": str_price,        # Отправляем очищенную и округленную цену
+        "price": str_price,        # Отправляем строку строго с двумя знаками после запятой
         "quantity": str_quantity,
         "recvWindow": "60000",
         "side": side,
@@ -90,11 +88,11 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "type": "LIMIT"
     }
     
-    # Алфавитная сортировка и urlencode
+    # Алфавитная сортировка параметров для формирования корректной подписи
     sorted_params = sorted(raw_params.items())
     query_string = urllib.parse.urlencode(sorted_params)
     
-    # Генерация подписи
+    # Генерация подписи HMAC-SHA256
     signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
     full_query_with_sig = f"{query_string}&signature={signature}"
     full_url = f"{correct_base_url}{endpoint}?{full_query_with_sig}"
@@ -107,6 +105,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
+            # Отправка POST-запроса (параметры внутри Query String гарантируют обработку парсером Dzengi)
             async with session.post(full_url, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
