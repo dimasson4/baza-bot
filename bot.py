@@ -141,7 +141,7 @@ def execute_order_callback(call):
     
     # Официальный торговый адаптер левередж-рынка Dzengi
     base_url = "https://api-adapter.dzengi.com"
-    endpoint = "/api/v1/leverageOrder"
+    endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
