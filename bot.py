@@ -59,18 +59,17 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """
-    Отправка маржинального приказа LIMIT согласно строгой спецификации Dzengi API POST.
-    Параметры передаются строго внутри тела payload (data=payload_body) на официальный торговый домен.
-    """
+    # Исправленный базовый URL торгового адаптера Dzengi
+    correct_base_url = "https://api-adapter.dzengi.com"
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
+    # Форматирование числовых значений согласно спецификации контракта инструмента
     str_price = f"{price:.2f}"
     str_quantity = f"{quantity:.4f}"
     str_timestamp = str(timestamp)
     
-    # 1. Формирование упорядоченных параметров для подписи (Слэш в symbol НЕ экранируется)
+    # Сбор параметров в словарь (названия ключей чувствительны к регистру)
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
         "leverage": "10",
@@ -78,50 +77,38 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "quantity": str_quantity,
         "recvWindow": "60000",
         "side": side,
-        "symbol": "ETH/USD_LEVERAGE",
+        "symbol": "ETH/USD_LEVERAGE",  # Исходное значение для urlencode
         "timestamp": str_timestamp,
         "type": "LIMIT"
     }
     
-    # Алфавитная сборка строки параметров для генерации HMAC SHA256 подписи
-    sorted_raw = sorted(raw_params.items())
-    signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
-    signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
+    # Сортировка по ключам в алфавитном порядке и кодирование через urlencode.
+    # Важно: Dzengi ожидает кодирование слэша в верхнем регистре (%2F), что urlencode делает по умолчанию.
+    sorted_params = sorted(raw_params.items())
+    query_string = urllib.parse.urlencode(sorted_params)
     
-    # 2. Формирование тела POST-запроса (Слэш кодируется как %2F для передачи данных)
-    url_parts = [
-        f"accountId={MY_ACCOUNT_ID}",
-        "leverage=10",
-        f"price={str_price}",
-        f"quantity={str_quantity}",
-        "recvWindow=60000",
-        f"side={side}",
-        "symbol=ETH%2FUSD_LEVERAGE",  # Экранирование для WAF Cloudflare
-        f"timestamp={str_timestamp}",
-        "type=LIMIT"
-    ]
+    # Генерация подписи HMAC-SHA256 на основе получившейся Query-строки
+    signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
     
-    # Склеиваем тело и ОБЯЗАТЕЛЬНО добавляем параметр signature в самый конец payload
-    payload_body = "&".join(url_parts) + f"&signature={signature}"
+    # Итоговая строка параметров, отправляемая на сервер, включая подпись
+    full_query_with_sig = f"{query_string}&signature={signature}"
     
-    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Переключение на официальный боевой торговый домен Dzengi API
-    REAL_DZENGI_URL = "https://dzengi.com"
-    full_url = f"{REAL_DZENGI_URL}{endpoint}"
+    # Передача параметров в URL-строке для исключения конфликтов десериализации в теле POST-запроса
+    full_url = f"{correct_base_url}{endpoint}?{full_query_with_sig}"
     
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка маржинального POST приказа на {full_url}")
-            async with session.post(full_url, data=payload_body, headers=headers) as response:
+            # Отправляем POST-запрос с пустым телом, так как все параметры переданы в URL
+            async with session.post(full_url, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
         except Exception as e:
-            logger.error(f"[API_EXCEPTION] Сетевой краш: {str(e)}")
             return {"status": 500, "data": str(e)}
 
 # --- Секция Логики Обработки Сигналов (Мега-Протокол v14.3) ---
