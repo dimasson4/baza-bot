@@ -125,7 +125,6 @@ def handle_market_log(message):
             bot.send_message(chat_id, clean_operator_text)
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка обработки: {str(e)}", chat_id, status_msg.message_id)
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
 def execute_order_callback(call):
     _, direction, entry_price, lot = call.data.split("_")
@@ -140,11 +139,22 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
     status_msg = bot.send_message(chat_id, f"⏳ _Отправляю маржинальный приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
+    # Идеально чистый базовый адрес без параметров в URL
     full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Полностью рабочий query_string с зашитым правильным MY_ACCOUNT_ID
+    # Собираем параметры в словарь, чтобы избежать редиректов Cloudflare
+    payload = {
+        "symbol": "ETH/USD_LEVERAGE",
+        "side": side,
+        "accountId": MY_ACCOUNT_ID,
+        "quantity": float(lot),
+        "type": "MARKET",
+        "timestamp": timestamp
+    }
+    
+    # Формируем строку подписи строго по документации Dzengi
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
     signature = hmac.new(
@@ -153,11 +163,24 @@ def execute_order_callback(call):
         digestmod='sha256'
     ).hexdigest()
     
-    full_url = f"{full_trading_url}?{query_string}&signature={signature}"
-    headers = {"X-MBX-APIKEY": DZENGI_API_KEY, "Content-Type": "application/json"}
+    # Добавляем подпись в контейнер параметров
+    payload["signature"] = signature
+    
+    headers = {
+        "X-MBX-APIKEY": DZENGI_API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
     
     try:
-        response = requests.post(full_url, headers=headers, timeout=10)
+        # Передаем параметры в теле data, сохраняя URL девственно чистым
+        response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
+        raw_text = response.text
+        
+        try:
+            res_data = response.json()
+        except:
+            res_data = {}
+            
         if response.status_code == 200:
             bot.edit_message_text(
                 f"✅ *ОРДЕР ИСПОЛНЕН НА DZENGI!*\n"
