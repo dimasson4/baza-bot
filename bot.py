@@ -143,7 +143,7 @@ def execute_order_callback(call):
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    query_string = f"symbol=ETH%2FUSD&side={side}&accountId=0&quantity={lot}&type=MARKET&timestamp={timestamp}"
+    query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId=0&quantity={lot}&type=MARKET&timestamp={timestamp}"
     
     signature = hmac.new(
         DZENGI_SECRET_KEY.encode('utf-8'),
