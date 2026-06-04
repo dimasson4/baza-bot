@@ -59,7 +59,10 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """Отправка маржинального приказа LIMIT согласно официальной документации Dzengi API."""
+    """
+    Отправка маржинального приказа LIMIT на официальный рабочий шлюз Dzengi API.
+    Все параметры строго отсортированы по алфавиту для успешной валидации подписи.
+    """
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
     
@@ -69,7 +72,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "leverage": "10",  # Обязательный маржинальный параметр плеча
         "price": f"{price:.2f}",
         "quantity": f"{quantity:.4f}",
-        "recvWindow": "60000",
+        "recvWindow": "60000",  # Окно валидности запроса
         "side": side,
         "symbol": "ETH/USD_LEVERAGE",
         "timestamp": str(timestamp),
@@ -81,7 +84,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # 2. Формирование строки параметров ДЛЯ URL (Слэш в symbol заменяется на %2F)
+    # 2. Формирование строки параметров ДЛЯ URL (Слэш в symbol заменяется вручную на %2F)
     # Порядок следования параметров в url_parts строго идентичен алфавитной сортировке!
     url_parts = [
         f"accountId={MY_ACCOUNT_ID}",
@@ -96,8 +99,11 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     ]
     query_string = "&".join(url_parts)
     
+    # ВОЗВРАЩЕНО: Официальный боевой домен из логов второго бота-аналитика
+    REAL_DZENGI_URL = "https://api-adapter.dzengi.com"
+    
     # Финальная сборка URL с пустым телом POST (data=None) во избежание ошибки 405
-    full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
+    full_url = f"{REAL_DZENGI_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
