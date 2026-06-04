@@ -140,7 +140,8 @@ def execute_order_callback(call):
     status_msg = bot.send_message(chat_id, f"⏳ _Отправляю приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
     # Официальный торговый адаптер левередж-рынка Dzengi
-    url = "https://dzengi.com"
+    base_url = "https://api-adapter.dzengi.com"
+    endpoint = "/api/v1/leverageOrder"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
@@ -153,7 +154,7 @@ def execute_order_callback(call):
         digestmod='sha256'
     ).hexdigest()
     
-    full_url = f"{url}?{query_string}&signature={signature}"
+    full_url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/json"
