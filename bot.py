@@ -210,36 +210,40 @@ async def handle_signal_message(message: types.Message):
 
 @dp.callback_query(F.data.startswith("exec_"))
 async def process_order_execution(callback: types.CallbackQuery):
-    # Разбор параметров из callback_data
     _, side, price_str, lot_str = callback.data.split("_")
     
-    # Отправляем всплывающее уведомление, чтобы убрать анимацию часов на кнопке
-    await callback.answer("⏳ Ордер отправляется на платформу Dzengi...")
+    # Сразу гасим часы на кнопке, чтобы не было бесконечной анимации
+    await callback.answer("⏳ Запрос обрабатывается платформой Dzengi...")
     
     try:
-        # Асинхронный вызов сетевого шлюза к API Dzengi
         res = await send_limit_order(side=side, price=float(price_str), quantity=float(lot_str))
         
-        # Исправленная проверка успешных статус-кодов (200 OK)
-        if res.get("status") in [200, 201]:
+        # Безопасно извлекаем данные и режем до 1000 символов для защиты от лимитов Telegram
+        raw_data = res.get("data", "Нет данных")
+        safe_log = (raw_data[:1000] + "...") if len(raw_data) > 1000 else raw_data
+        status_code = res.get("status", 500)
+
+        if status_code in [200, 201]:
             response_msg = (
-                f"✅ **Ордер успешно исполнен на Dzengi.com!**\n\n"
+                f"✅ **Ордер успешно размещен!**\n\n"
                 f"• Направление: `{side}`\n"
-                f"• Цена (Limit): `{price_str}`\n"
+                f"• Цена: `{price_str}`\n"
                 f"• Объем: `{lot_str} ETH`\n"
-                f"• Лог ответа: `{res.get('data')}`"
+                f"• Ответ API: `{safe_log}`"
             )
         else:
             response_msg = (
-                f"❌ **Ошибка платформы Dzengi (Код: {res.get('status')})**\n\n"
-                f"Сервер отклонил запрос. Проверьте правильность API-ключей, "
-                f"баланс аккаунта или доступность торговой пары.\n"
-                f"Лог ошибки: `{res.get('data')}`"
+                f"❌ **Платформа Dzengi вернула ошибку!**\n\n"
+                f"• **HTTP Код:** `{status_code}`\n"
+                f"• **Возможная причина:** Неверный API-ключ в настройках Render, "
+                f"недостаточно баланса или сработал защитный экран Cloudflare.\n\n"
+                f"📋 **Фрагмент лога ответа (срез):**\n```html\n{safe_log}\n```"
             )
             
     except Exception as e:
-        logger.error(f"Критическое исключение при обработке ордера: {str(e)}")
-        response_msg = f"❌ **Критический сбой логики бота!**\nОписание ошибки: `{str(e)}`"
+        logger.error(f"Критическое исключение: {str(e)}")
+        response_msg = f"❌ **Внутренний сбой бота:** `{str(e)}`"
         
-    # Гарантированная отправка финального сообщения оператору
+    # Теперь сообщение отправится гарантированно, лимит в 4096 символов не будет превышен
     await callback.message.answer(response_msg, parse_mode="Markdown")
+
