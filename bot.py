@@ -74,7 +74,7 @@ def handle_market_log(message):
             return
 
         # 3. АПТЕЧНЫЙ РАСЧЕТ МАТРИЦЫ ОРДЕРОВ ПО ФОРМУЛАМ
-        balance = 10.00  # Базовый баланс fallback
+        balance = 67.58  # Базовый баланс fallback
         lot = round((balance * 0.02) / (18.50 * 1.02), 3)
         if lot < 0.001:
             lot = 0.001
@@ -135,7 +135,7 @@ def execute_order_callback(call):
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
         "accountId": MY_ACCOUNT_ID,
-        "quantity": float(lot),
+        "quantity": f"{float(lot):.3f}",
         "type": "MARKET",
         "timestamp": timestamp
     }
