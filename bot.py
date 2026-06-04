@@ -48,16 +48,13 @@ def handle_market_log(message):
 
     # 1. СВЕРХТОЧНЫЙ МАТЕМАТИЧЕСКИЙ ПАРСИНГ ЛОГА СКРИПТОМ PYTHON
     try:
-        # Извлекаем цену
         price_match = re.search(r"Цена:\s*([\d.]+)", log_text)
         price = float(price_match.group(1)) if price_match else None
 
-        # Извлекаем направление стакана
         stakan_match = re.search(r"Стакан:\s*.*?(\d+)%\s*покупки\s*/\s*.*?(\d+)%\s*продажи", log_text)
         buy_pct = int(stakan_match.group(1)) if stakan_match else 0
         sell_pct = int(stakan_match.group(2)) if stakan_match else 0
 
-        # Извлекаем вектор тренда 4h
         is_bearish = "медвежий" in log_text.lower() or "↓" in log_text
         is_bullish = "бычий" in log_text.lower() or "↑" in log_text
 
@@ -80,7 +77,7 @@ def handle_market_log(message):
         balance = 65.54  # Базовый баланс fallback
         lot = round((balance * 0.02) / (18.50 * 1.02), 3)
         if lot < 0.001:
-            lot = 0.001 # Страховка под лимиты Dzengi
+            lot = 0.001
 
         if direction == "SHORT":
             action_text = "🔴 ОТКРЫТЬ SHORT"
@@ -109,12 +106,13 @@ def handle_market_log(message):
         keyboard.add(telebot.types.InlineKeyboardButton(text=btn_text, callback_data=callback_payload))
 
         try:
-        bot.delete_message(chat_id, message.message_id)
+            bot.delete_message(chat_id, message.message_id)
         except:
-        pass
+            pass
+
         bot.send_message(chat_id, dashboard, reply_markup=keyboard, parse_mode="Markdown")
 
-        except Exception as parse_error:
+    except Exception as parse_error:
         bot.send_message(chat_id, f"❌ *Ошибка разбора данных алгоритмом:* `{str(parse_error)}`")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("exec_"))
@@ -154,7 +152,6 @@ def execute_order_callback(call):
     ]
     
     success = False
-    raw_response = "Нет ответа"
     
     for target_url in endpoints:
         try:
