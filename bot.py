@@ -17,31 +17,30 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Инициализация конфигурации среды выполнения
+# Инициализация конфигурации среды выполнения из панели Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
 DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Фиксированные константы платформы
+# Фиксированные константы торговой платформы
 MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
+# ИСПРАВЛЕНО: Установлен корректный шлюз-адаптер согласно вашему второму боту
 DZENGI_BASE_URL = "https://dzengi.com"
 
 # Инициализация ядра aiogram 3.x
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Глобальное атомарное хранилище для сохранения целостности параметров ордеров между шагами
+# Глобальное хранилище для сохранения параметров ордеров между шагами
 ORDER_CACHE = {}
 
 # --- Секция Асинхронного Веб-сервера (Render Health Check) ---
 
 async def handle_health_check(request):
-    """Возвращает моментальный ответ для балансировщика Render."""
     return web.Response(text="OK", status=200)
 
 async def start_web_server():
-    """Инициализация изолированного веб-сервера на выделенном порту."""
     app = web.Application()
     app.router.add_get("/", handle_health_check)
     runner = web.AppRunner(app)
@@ -50,10 +49,9 @@ async def start_web_server():
     await site.start()
     logger.info(f"[HEALTH_CHECK] Асинхронный веб-сервер успешно запущен на порту {PORT}")
 
-# --- Секция Криптографии и Сетевого шлюза API Dzengi.com ---
+# --- Секция Криптографии и Сетевого шлюза API Dzengi ---
 
 def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
-    """Расчет HMAC-SHA256 подписи для верификации запроса платформой."""
     return hmac.new(
         secret_key.encode("utf-8"),
         query_string.encode("utf-8"),
@@ -61,12 +59,13 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
     ).hexdigest()
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
-    """Отправка маржинального приказа LIMIT согласно требованиям WAF Cloudflare платформы Dzengi."""
+    """Отправка маржинального приказа LIMIT через официальный api-adapter шлюз."""
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
-    symbol_encoded = "ETH%2FUSD_LEVERAGE"  # Принудительное жесткое кодирование слэша
     
-    params = {
+    # Сборка сырых параметров для вычисления подписи (слэш в инструменте НЕ экранируется)
+    raw_params = {
+        "symbol": "ETH/USD_LEVERAGE",
         "accountId": MY_ACCOUNT_ID,
         "type": "LIMIT",
         "side": side,
@@ -75,17 +74,23 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         "timestamp": str(timestamp)
     }
     
-    # Сортировка параметров для генерации корректного хеша подписи
-    sorted_params = sorted(params.items())
-    query_parts = [f"{k}={urllib.parse.quote(v, safe='')}" for k, v in sorted_params]
+    sorted_raw = sorted(raw_params.items())
+    signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
+    signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # Сборка финальной query-строки: инструмент вручную ставится в начало
-    query_string = f"symbol={symbol_encoded}&" + "&".join(query_parts)
+    # Сборка параметров для URL-строки (слэш экранируется строго как %2F для адаптера)
+    url_params = {
+        "symbol": "ETH%2FUSD_LEVERAGE",
+        "accountId": MY_ACCOUNT_ID,
+        "type": "LIMIT",
+        "side": side,
+        "price": f"{price:.2f}",
+        "quantity": f"{quantity:.4f}",
+        "timestamp": str(timestamp)
+    }
+    sorted_url = sorted(url_params.items())
+    query_string = "&".join([f"{k}={urllib.parse.quote(v, safe='%+')}" for k, v in sorted_url])
     
-    # Вычисление подписи строго по собранной query-строке
-    signature = generate_dzengi_signature(query_string, DZENGI_SECRET_KEY)
-    
-    # Формирование URL. Тело POST-запроса остается строго пустым (None) во избежание ошибки 405
     full_url = f"{DZENGI_BASE_URL}{endpoint}?{query_string}&signature={signature}"
     
     headers = {
@@ -99,10 +104,9 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
             logger.info(f"[API_REQUEST] Отправка приказа на {full_url}")
             async with session.post(full_url, data=None, headers=headers) as response:
                 response_text = await response.text()
-                logger.info(f"[API_RESPONSE] Код: {response.status} | Тело ответа получено")
                 return {"status": response.status, "data": response_text}
         except Exception as e:
-            logger.error(f"[API_EXCEPTION] Сбой сетевого подключения: {str(e)}")
+            logger.error(f"[API_EXCEPTION] Сетевой сбой: {str(e)}")
             return {"status": 500, "data": str(e)}
 # --- Секция Логики Обработки Сигналов (Мега-Протокол v14.3) ---
 
@@ -217,59 +221,72 @@ async def handle_signal_message(message: types.Message):
     await message.answer(dashboard, parse_mode="Markdown", reply_markup=builder.as_markup())
 @dp.callback_query(F.data.startswith("tx_"))
 async def process_order_execution(callback: types.CallbackQuery):
-    # Извлечение ID сообщения для связи с кэшем
-    msg_id = callback.data.split("_")[1]
+    # 1. Извлекаем ID сообщения из callback_data
+    try:
+        data_parts = callback.data.split("_")
+        msg_id = data_parts[1]
+    except Exception as e:
+        await callback.answer("❌ Ошибка разбора метаданных кнопки.", show_alert=True)
+        return
     
-    # 1. Защита от потери контекста: проверяем наличие записи в кэше
+    # 2. Валидация наличия транзакции в кэше памяти RAM
     if msg_id not in ORDER_CACHE:
-        await callback.answer("❌ Ошибка целостности: Данные ордера устарели или стерты из памяти.", show_alert=True)
+        await callback.answer("❌ Данные ордера устарели. Сгенерируйте новый сигнал.", show_alert=True)
         return
 
-    # Погашение часов загрузки на кнопке интерфейса Telegram
+    # Мгновенно тушим анимацию часов, отправляя статус-уведомление оператору
     await callback.answer("⏳ Запрос обрабатывается шлюзом платформы Dzengi...")
     
-    # Извлечение чистых атомарных параметров из кэша памяти
-    cached_order = ORDER_CACHE[cached_order] if msg_id in ORDER_CACHE else ORDER_CACHE[msg_id]
+    cached_order = ORDER_CACHE[msg_id]
     side = cached_order["side"]
     price = cached_order["price"]
     lot = cached_order["lot"]
     
     try:
-        # Передача параметров в сетевой шлюз
-        res = await send_limit_order(side=side, price=price, quantity=lot)
+        logger.info(f"[GATEWAY] Инициация отправки ордера для сообщения {msg_id}")
+        
+        # Интеграция контроля таймаута: защищаем бота от бесконечного зависания сети
+        async with asyncio.timeout(8.0):
+            res = await send_limit_order(side=side, price=price, quantity=lot)
+            
         status_code = res.get("status", 500)
         raw_data = res.get("data", "Нет данных")
 
-        # Проверка успешного HTTP-статуса от биржи Dzengi
+        # Анализ результатов ответа шлюза биржи
         if status_code in [200, 201]:
             response_msg = (
                 f"✅ **Ордер успешно размещен в стакан платформы!**\n\n"
-                f"• Направление: `{side}`\n"
-                f"• Цена (Limit): `{price:.2f}`\n"
-                f"• Сформированный объем: `{lot:.4f} ETH`\n"
-                f"• Ответ шлюза API: `{raw_data[:200]}`"
+                f"• **Направление:** `{side}`\n"
+                f"• **Цена (Limit):** `{price:.2f}`\n"
+                f"• **Объем:** `{lot:.4f} ETH`\n"
+                f"• **Ответ API:** `{raw_data[:150]}`"
             )
             await callback.message.answer(response_msg, parse_mode="Markdown")
-            # При успешном выполнении очищаем ячейку кэша для предотвращения Double-Spend (повторного клика)
-            ORDER_CACHE.pop(msg_id, None)
+            ORDER_CACHE.pop(msg_id, None)  # Защита от Double-Spend
         else:
-            # Если вернулась гигантская ошибка/HTML от Cloudflare — пакуем её в текстовый файл!
+            # Предотвращение поломки лимита 4096 символов Telegram через вынос в error_log.txt
             response_msg = (
-                f"❌ **Платформа Dzengi вернула ошибку! (HTTP {status_code})**\n"
-                f"Полный ответ биржи превысил лимит символов и прикреплен ниже в файле `error_log.txt`."
+                f"❌ **Платформа Dzengi отклонила транзакцию! (HTTP {status_code})**\n"
+                f"Технический отчет о причине отказа прикреплен ниже в файле."
             )
             await callback.message.answer(response_msg, parse_mode="Markdown")
             
-            # Генерация и отправка файла в оперативном режиме без сохранения на диск
             file_buffer = BytesIO(raw_data.encode("utf-8"))
             file_buffer.name = "error_log.txt"
             await callback.message.answer_document(
                 document=types.BufferedInputFile(file_buffer.read(), filename="error_log.txt")
             )
             
+    except asyncio.TimeoutError:
+        logger.error(f"[GATEWAY_TIMEOUT] Сервер ://dzengi.com не ответил за 8 секунд.")
+        await callback.message.answer(
+            "❌ **Таймаут соединения!**\n"
+            "Удаленный шлюз ://dzengi.com не ответил на запрос за 8 секунд. "
+            "Проверьте настройки сети или статус блокировок."
+        )
     except Exception as e:
-        logger.error(f"[EXECUTION_CRASH] Критический сбой выполнения: {str(e)}")
-        await callback.message.answer(f"❌ **Критический внутренний сбой логики:** `{str(e)}`")
+        logger.error(f"[EXECUTION_CRASH] Критический сбой логики: {str(e)}")
+        await callback.message.answer(f"❌ **Критический внутренний сбой:** `{str(e)}`")
 
 # --- Точка запуска и Очистка сетевых шлюзов при деплое на Render ---
 
