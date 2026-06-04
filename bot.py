@@ -306,15 +306,16 @@ async def main():
     # 1. Запуск асинхронного фонового веб-сервера для прохождения Health Check Render
     await start_web_server()
     
-    # 2. Гарантированная диагностика исходящего IP-адреса с выверенными отступами
+    # 2. Гарантированная текстовая диагностика исходящего IP-адреса
     try:
         diagnostic_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         async with ClientSession() as session:
-            async with session.get("https://ipify.org", headers=diagnostic_headers) as resp:
-                res_json = await resp.json()
-                current_ip = res_json.get("ip", "Не определен")
+            # Запрашиваем чистый текстовый IP напрямую с резервного зеркала
+            async with session.get("https://ident.me", headers=diagnostic_headers) as resp:
+                current_ip = await resp.text()
+                current_ip = current_ip.strip() # Очищаем от возможных пробелов
                 logger.info("=========================================================")
                 logger.info(f"🔥 [IP_DIAGNOSTIC] ТЕКУЩИЙ ИСХОДЯЩИЙ IP БОТА: {current_ip}")
                 logger.info("=========================================================")
