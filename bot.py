@@ -306,11 +306,22 @@ async def main():
     # 1. Запуск асинхронного фонового веб-сервера для прохождения Health Check Render
     await start_web_server()
     
-    # 2. Борьба с ошибкой 409 Conflict: принудительный жесткий сброс вебхуков при старте нового контейнера
+    # 2. БОРЬБА С ОШИБКОЙ -1025: Диагностика исходящего IP-адреса контейнера Render
+    try:
+        async with ClientSession() as session:
+            async with session.get("https://ipify.org") as resp:
+                current_ip = await resp.text()
+                logger.info(f"=========================================================")
+                logger.info(f"🔥 [IP_DIAGNOSTIC] ТЕКУЩИЙ ИСХОДЯЩИЙ IP БОТА: {current_ip}")
+                logger.info(f"=========================================================")
+    except Exception as ip_err:
+        logger.error(f"[IP_DIAGNOSTIC] Не удалось определить IP-адрес: {str(ip_err)}")
+    
+    # 3. Борьба с ошибкой 409 Conflict: принудительный жесткий сброс вебхуков при старте нового контейнера
     logger.info("[INIT] Запуск процедуры очистки очереди обновлений Telegram...")
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # 3. Старт долгого опроса (Polling)
+    # 4. Старт долгого опроса (Polling)
     logger.info("[INIT] Риск-модуль успешно запущен и готов к обработке сигналов.")
     await dp.start_polling(bot)
 
