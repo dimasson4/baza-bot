@@ -11,21 +11,46 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DZENGI_API_KEY = os.environ.get("DZENGI_API_KEY")
 DZENGI_SECRET_KEY = os.environ.get("DZENGI_SECRET_KEY")
+# Render автоматически предоставляет этот URL вашего сервиса (например, https://baza-bot-72h6.onrender.com)
+WEBHOOK_HOST = os.environ.get("RENDER_EXTERNAL_URL")
 
 MY_ACCOUNT_ID = "4295225058470143566-eac1_a580"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
+class WebhookAndHealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args): return
+        # Оставляем Health Check для Render на главном URL "/"
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-def run_health_server():
+    def do_POST(self):
+        # Обрабатываем входящие обновления от Telegram по секретному пути
+        if self.path == f"/{BOT_TOKEN}/":
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            
+            self.send_response(200)
+            self.end_headers()
+            
+            # Передаем обновление в telebot
+            update = telebot.types.Update.de_json(post_data)
+            bot.process_new_updates([update])
+        else:
+            self.send_response(403)
+            self.end_headers()
+
+    def log_message(self, format, *args): 
+        return
+
+def run_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server = HTTPServer(("0.0.0.0", port), WebhookAndHealthHandler)
     server.serve_forever()
 
 @bot.message_handler(func=lambda message: "ETH/USD" in message.text)
@@ -94,12 +119,10 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера...")
     status_msg = bot.send_message(chat_id, f"⏳ Отправляю приказ...")
     
-    # Точный адрес REST API Dzengi для выставления ордеров leverage
     full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
-    # Собираем параметры в словарь
     payload = {
         "symbol": "ETH/USD_LEVERAGE",
         "side": side,
@@ -109,21 +132,16 @@ def execute_order_callback(call):
         "timestamp": timestamp
     }
     
-    # Строка параметров для корректной генерации HMAC-подписи
     query_string = f"symbol=ETH%2FUSD_LEVERAGE&side={side}&accountId={MY_ACCOUNT_ID}&quantity={lot}&type=MARKET&timestamp={timestamp}"
     signature = hmac.new(DZENGI_SECRET_KEY.encode('utf-8'), query_string.encode('utf-8'), digestmod='sha256').hexdigest()
-    
-    # Добавляем подпись в payload
     payload["signature"] = signature
     
-    # Строгие заголовки
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
     try:
-        # Отправляем параметры в теле запроса (data=payload)
         response = requests.post(full_trading_url, headers=headers, data=payload, timeout=10)
         if response.status_code == 200:
             bot.edit_message_text(f"✅ УСПЕШНО", chat_id, status_msg.message_id)
@@ -133,17 +151,16 @@ def execute_order_callback(call):
         bot.edit_message_text(f"❌ СБОЙ: {str(e)}", chat_id, status_msg.message_id)
 
 if __name__ == "__main__":
-    # Запускаем фоновый веб-сервер для прохождения деплоя на Render
-    server_thread = Thread(target=run_health_server)
-    server_thread.daemon = True
-    server_thread.start()
-    
-    # Вечный цикл поллинга с безопасным подавлением конфликтов перезапуска
-    while True:
-        try:
-            bot.delete_webhook(drop_pending_updates=True)
-            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=10)
-        except Exception as e:
-            # Ошибка 409 или сетевой сбой во время деплоя просто вызовут перезапуск цикла через 3 секунды
-            time.sleep(3)
-            continue
+    # Если бот запущен на Render, активируем вебхук
+    if WEBHOOK_HOST:
+        bot.remove_webhook()
+        # Устанавливаем вебхук на URL вашего приложения Render
+        webhook_url = f"{WEBHOOK_HOST.rstrip('/')}/{BOT_TOKEN}/"
+        bot.set_webhook(url=webhook_url)
+        print(f"🚀 Вебхук успешно установлен на: {webhook_url}")
+        # Запускаем сервер (он слушает и Health Check, и вебхуки)
+        run_server()
+    else:
+        # Локальный запуск на ПК автоматически использует обычный безопасный поллинг
+        bot.remove_webhook()
+        bot.infinity_polling(skip_pending=True)
