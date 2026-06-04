@@ -140,8 +140,7 @@ def execute_order_callback(call):
     bot.answer_callback_query(call.id, text="🚀 Отправка ордера на Dzengi.com...")
     status_msg = bot.send_message(chat_id, f"⏳ _Отправляю маржинальный приказ {direction} на шлюз Dzengi..._", parse_mode="Markdown")
     
-    base_url = "https://dzengi.com"
-    endpoint = "/api/v1/order"
+    full_trading_url = "https://dzengi.com"
     timestamp = int(time.time() * 1000)
     side = "BUY" if direction == "LONG" else "SELL"
     
@@ -154,7 +153,7 @@ def execute_order_callback(call):
         digestmod='sha256'
     ).hexdigest()
     
-    full_url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
+    full_url = f"{full_trading_url}?{query_string}&signature={signature}"
     headers = {"X-MBX-APIKEY": DZENGI_API_KEY, "Content-Type": "application/json"}
     
     try:
