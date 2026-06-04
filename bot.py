@@ -60,9 +60,8 @@ def generate_dzengi_signature(query_string: str, secret_key: str) -> str:
 
 async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     """
-    Отправка маржинального приказа LIMIT на официальный шлюз Dzengi API.
-    Все параметры передаются строго как Query Parameters прямо в URL-строке (data=None),
-    что является единственным способом пробить WAF Cloudflare на ://dzengi.com.
+    Отправка маржинального приказа LIMIT согласно строгой спецификации Dzengi API POST.
+    Параметры передаются строго внутри тела payload (data=payload_body), а не в URL-строке.
     """
     endpoint = "/api/v1/order"
     timestamp = int(time.time() * 1000)
@@ -75,7 +74,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     # 1. Формирование упорядоченных параметров ДЛЯ ПОДПИСИ (Слэш в symbol НЕ экранируется)
     raw_params = {
         "accountId": MY_ACCOUNT_ID,
-        "leverage": "10",  # Маржинальное плечо х10
+        "leverage": "10",  # Изолированное маржинальное плечо по протоколу
         "price": str_price,
         "quantity": str_quantity,
         "recvWindow": "60000",
@@ -90,7 +89,7 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     signature_string = "&".join([f"{k}={v}" for k, v in sorted_raw])
     signature = generate_dzengi_signature(signature_string, DZENGI_SECRET_KEY)
     
-    # 2. Формирование Query-строки параметров ДЛЯ URL (Слэш кодируется строго вручную как %2F)
+    # 2. Формирование строки параметров ДЛЯ ТЕЛА ЗАПРОСА (Слэш кодируется как %2F)
     # Порядок следования параметров ОБЯЗАТЕЛЬНО должен быть строго алфавитным!
     url_parts = [
         f"accountId={MY_ACCOUNT_ID}",
@@ -99,15 +98,17 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
         f"quantity={str_quantity}",
         "recvWindow=60000",
         f"side={side}",
-        "symbol=ETH%2FUSD_LEVERAGE",  # Ручное экранирование слэша
+        "symbol=ETH%2FUSD_LEVERAGE",  # Экранирование слэша
         f"timestamp={str_timestamp}",
         "type=LIMIT"
     ]
-    query_string = "&".join(url_parts)
     
-    # Финальная сборка full_url. Тело запроса (data=None) остается АБСОЛЮТНО пустым.
-    REAL_DZENGI_URL = "https://://dzengi.com"
-    full_url = f"{REAL_DZENGI_URL}{endpoint}?{query_string}&signature={signature}"
+    # Склеиваем тело и ОБЯЗАТЕЛЬНО добавляем параметр signature в самый конец payload
+    payload_body = "&".join(url_parts) + f"&signature={signature}"
+    
+    # ИСПРАВЛЕНО: Чистый базовый адрес официального шлюза-адаптера БЕЗ параметров в URL строке
+    REAL_DZENGI_URL = "https://dzengi.com"
+    full_url = f"{REAL_DZENGI_URL}{endpoint}"
     
     headers = {
         "X-MBX-APIKEY": DZENGI_API_KEY,
@@ -117,14 +118,15 @@ async def send_limit_order(side: str, price: float, quantity: float) -> dict:
     
     async with ClientSession() as session:
         try:
-            logger.info(f"[API_REQUEST] Отправка верифицированного Query POST приказа на {full_url}")
-            # Параметры передаются в URL-строке, аргумент data оставляем строго пустым (None)
-            async with session.post(full_url, data=None, headers=headers) as response:
+            logger.info(f"[API_REQUEST] Отправка каноничного POST приказа на {full_url}")
+            # Параметры передаются в аргумент data, URL строка остается абсолютно чистой
+            async with session.post(full_url, data=payload_body, headers=headers) as response:
                 response_text = await response.text()
                 return {"status": response.status, "data": response_text}
         except Exception as e:
             logger.error(f"[API_EXCEPTION] Сетевой краш: {str(e)}")
             return {"status": 500, "data": str(e)}
+
 # --- Секция Логики Обработки Сигналов (Мега-Протокол v14.3) ---
 
 def escape_markdown(text: str) -> str:
